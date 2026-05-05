@@ -8,7 +8,14 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from walkmarr.config import load_config, profile_name_for_title, resolve_api_key
+from walkmarr.config import (
+    bootstrap_config,
+    default_bootstrap_config_path,
+    default_bootstrap_payload,
+    load_config,
+    profile_name_for_title,
+    resolve_api_key,
+)
 from walkmarr.exceptions import ConfigError, ProviderError, WalkmarrError
 from walkmarr.models import AppConfig
 from walkmarr.process import ensure_required_tools, process_media_item
@@ -72,6 +79,51 @@ def config_check(runtime: RuntimeContext) -> None:
         raise _as_click_error(exc) from exc
 
     runtime.console.print(f"Config OK: {runtime.loaded_path}")
+
+
+@config.command("init")
+@click.option(
+    "--path",
+    "target_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Output config path (default: ~/.config/walkmarr/config.yml).",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing config files.")
+@click.option(
+    "--prompt",
+    "interactive_prompt",
+    is_flag=True,
+    help="Prompt for provider URLs, API key mode, mappings, and output roots.",
+)
+@click.pass_obj
+def config_init(
+    runtime: RuntimeContext,
+    target_path: Path | None,
+    force: bool,
+    interactive_prompt: bool,
+) -> None:
+    """Bootstrap a new Walkmarr config file."""
+    del runtime
+    resolved_target_path = target_path or default_bootstrap_config_path()
+
+    payload = default_bootstrap_payload()
+    if interactive_prompt:
+        payload = _prompt_bootstrap_payload(payload)
+
+    try:
+        written = bootstrap_config(
+            resolved_target_path,
+            payload=payload,
+            force=force,
+            write_env_example=True,
+        )
+    except ConfigError as exc:
+        raise _as_click_error(exc) from exc
+
+    click.echo("Wrote config bootstrap files:")
+    for path in written:
+        click.echo(f"- {path}")
 
 
 @main.group()
@@ -266,6 +318,58 @@ def radarr_convert(
             runtime.console.print(f"Done: {result.output_path}")
     except (WalkmarrError, ConfigError, ProviderError) as exc:
         raise _as_click_error(exc) from exc
+
+
+def _prompt_bootstrap_payload(base_payload: dict[str, object]) -> dict[str, object]:
+    """Collect interactive config bootstrap values from user prompts."""
+    payload = dict(base_payload)
+
+    sonarr_url = click.prompt("Sonarr URL", default="http://localhost:8989", type=str)
+    radarr_url = click.prompt("Radarr URL", default="http://localhost:7878", type=str)
+    key_mode = click.prompt(
+        "API key storage mode",
+        type=click.Choice(["env", "inline"], case_sensitive=False),
+        default="env",
+        show_choices=True,
+    ).lower()
+
+    providers = {
+        "sonarr": {"url": sonarr_url},
+        "radarr": {"url": radarr_url},
+    }
+    if key_mode == "inline":
+        providers["sonarr"]["api_key"] = click.prompt("Sonarr API key", hide_input=True, type=str)
+        providers["radarr"]["api_key"] = click.prompt("Radarr API key", hide_input=True, type=str)
+    else:
+        providers["sonarr"]["api_key_env"] = click.prompt(
+            "Sonarr API key env var",
+            default="SONARR_API_KEY",
+            type=str,
+        )
+        providers["radarr"]["api_key_env"] = click.prompt(
+            "Radarr API key env var",
+            default="RADARR_API_KEY",
+            type=str,
+        )
+
+    shows_remote = click.prompt("Remote shows root", default="Z:/shows", type=str)
+    shows_local = click.prompt("Local shows root", default="/mnt/z/shows", type=str)
+    movies_remote = click.prompt("Remote movies root", default="Z:/movies", type=str)
+    movies_local = click.prompt("Local movies root", default="/mnt/z/movies", type=str)
+    tv_container_root = click.prompt("Container TV root", default="/tv", type=str)
+    movies_container_root = click.prompt("Container movies root", default="/movies", type=str)
+    output_tv = click.prompt("Output TV root", default="/mnt/d/ipod/shows", type=str)
+    output_movies = click.prompt("Output movies root", default="/mnt/d/ipod/movies", type=str)
+
+    payload["providers"] = providers
+    payload["path_mappings"] = [
+        {"remote": shows_remote, "local": shows_local},
+        {"remote": movies_remote, "local": movies_local},
+        {"remote": tv_container_root, "local": shows_local},
+        {"remote": movies_container_root, "local": movies_local},
+    ]
+    payload["output_roots"] = {"tv": output_tv, "movies": output_movies}
+    return payload
 
 
 if __name__ == "__main__":

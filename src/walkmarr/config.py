@@ -22,6 +22,106 @@ def config_search_paths() -> list[Path]:
     ]
 
 
+def default_bootstrap_config_path() -> Path:
+    """Return the default bootstrap config path."""
+    return Path("~/.config/walkmarr/config.yml").expanduser()
+
+
+def default_bootstrap_payload() -> dict[str, Any]:
+    """Return a full default config payload for bootstrapping."""
+    return {
+        "providers": {
+            "sonarr": {"url": "http://localhost:8989", "api_key_env": "SONARR_API_KEY"},
+            "radarr": {"url": "http://localhost:7878", "api_key_env": "RADARR_API_KEY"},
+        },
+        "path_mappings": [
+            {"remote": "Z:/shows", "local": "/mnt/z/shows"},
+            {"remote": "Z:/movies", "local": "/mnt/z/movies"},
+            {"remote": "/tv", "local": "/mnt/z/shows"},
+            {"remote": "/movies", "local": "/mnt/z/movies"},
+        ],
+        "output_roots": {"tv": "/mnt/d/ipod/shows", "movies": "/mnt/d/ipod/movies"},
+        "default_profiles": {"sonarr": "animation", "radarr": "movie"},
+        "profiles": {
+            "animation": {
+                "crf": 30,
+                "maxrate_floor_kbps": 250,
+                "maxrate_cap_kbps": 1200,
+                "bitrate_multiplier": 1.5,
+                "audio_bitrate_mono_kbps": 64,
+                "audio_bitrate_stereo_kbps": 96,
+                "max_width": 640,
+                "h264_profile": "baseline",
+                "h264_level": "3.0",
+            },
+            "live_action": {
+                "crf": 28,
+                "maxrate_floor_kbps": 350,
+                "maxrate_cap_kbps": 1500,
+                "bitrate_multiplier": 1.5,
+                "audio_bitrate_mono_kbps": 64,
+                "audio_bitrate_stereo_kbps": 96,
+                "max_width": 640,
+                "h264_profile": "baseline",
+                "h264_level": "3.0",
+            },
+            "movie": {
+                "crf": 27,
+                "maxrate_floor_kbps": 400,
+                "maxrate_cap_kbps": 1500,
+                "bitrate_multiplier": 1.5,
+                "audio_bitrate_mono_kbps": 64,
+                "audio_bitrate_stereo_kbps": 96,
+                "max_width": 640,
+                "h264_profile": "baseline",
+                "h264_level": "3.0",
+            },
+        },
+        "overrides": {"sonarr": {}, "radarr": {}},
+    }
+
+
+def bootstrap_config(
+    target_path: Path,
+    *,
+    payload: dict[str, Any],
+    force: bool,
+    write_env_example: bool,
+) -> list[Path]:
+    """Write bootstrap config and optional sibling .env.example file.
+
+    Args:
+        target_path: Destination config path.
+        payload: Config payload to serialize as YAML.
+        force: Overwrite existing files when true.
+        write_env_example: Whether to write .env.example next to config.
+
+    Returns:
+        Paths that were written.
+    """
+    written: list[Path] = []
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if target_path.exists() and not force:
+        raise ConfigError(f"Config already exists: {target_path}. Use --force to overwrite.")
+
+    target_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    written.append(target_path)
+
+    if write_env_example:
+        env_example_path = target_path.parent / ".env.example"
+        if env_example_path.exists() and not force:
+            return written
+        env_example_path.write_text(
+            "SONARR_API_KEY=replace_with_sonarr_api_key\n"
+            "RADARR_API_KEY=replace_with_radarr_api_key\n",
+            encoding="utf-8",
+        )
+        written.append(env_example_path)
+
+    return written
+
+
 def discover_config_path(explicit_path: Path | None) -> Path:
     """Discover config path from explicit value or default locations."""
     if explicit_path is not None:

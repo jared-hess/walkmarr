@@ -49,13 +49,19 @@ uv sync
 ## Example config
 
 ```bash
-cp config.example.yml walkmarr.yml
-cp .env.example .env
+uv run walkmarr config init
+cp ~/.config/walkmarr/.env.example ~/.config/walkmarr/.env
 ```
 
 Walkmarr also auto-loads a `.env` file located next to the config file (for
 example `./.env` when using `./walkmarr.yml`). Existing shell env vars take
 precedence.
+
+You can bootstrap with prompts:
+
+```bash
+uv run walkmarr config init --prompt
+```
 
 You can still export variables directly in your shell if preferred:
 
