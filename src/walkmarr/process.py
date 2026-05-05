@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import queue
 import shutil
 import shlex
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -516,44 +518,78 @@ def stage_source_file(
     if show_progress:
         console.print(f"Staging source: {source_path}")
         console.print(f"  -> {staged_path}")
+    else:
+        console.print(f"Staging source: {source_path}")
+        console.print(f"  -> {staged_path}")
 
-    chunk_size = 8 * 1024 * 1024
-    try:
-        if not show_progress:
-            console.print(f"Staging source: {source_path}")
-            console.print(f"  -> {staged_path}")
-            shutil.copy2(source_path, staged_path)
-            console.print("Staging complete.")
-            return staged_path
-
-        with (
-            source_path.open("rb") as src,
-            staged_path.open("wb") as dst,
-            Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TransferSpeedColumn(),
-                TimeRemainingColumn(),
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            _copy_file_chunked(
+                source_path=source_path,
+                staged_path=staged_path,
+                source_size=source_size,
                 console=console,
-                transient=True,
-            ) as progress,
-        ):
-            task = progress.add_task("Staging", total=source_size if source_size > 0 else None)
+                show_progress=show_progress,
+            )
+            shutil.copystat(source_path, staged_path)
+            break
+        except OSError as exc:
+            if staged_path.exists():
+                staged_path.unlink()
+            is_retryable = exc.errno == errno.EIO
+            if is_retryable and attempt < max_attempts:
+                console.print(
+                    f"Staging hit I/O error (attempt {attempt}/{max_attempts}); retrying..."
+                )
+                time.sleep(float(attempt))
+                continue
+            raise
+
+    if show_progress:
+        console.print("Staging complete.")
+    else:
+        console.print("Staging complete.")
+    return staged_path
+
+
+def _copy_file_chunked(
+    *,
+    source_path: Path,
+    staged_path: Path,
+    source_size: int,
+    console: Console,
+    show_progress: bool,
+) -> None:
+    chunk_size = 8 * 1024 * 1024
+    if not show_progress:
+        with source_path.open("rb") as src, staged_path.open("wb") as dst:
             while True:
                 chunk = src.read(chunk_size)
                 if not chunk:
                     break
                 dst.write(chunk)
-                progress.update(task, advance=len(chunk))
-        shutil.copystat(source_path, staged_path)
-    except OSError:
-        if staged_path.exists():
-            staged_path.unlink()
-        raise
+        return
 
-    if show_progress:
-        console.print("Staging complete.")
-    return staged_path
+    with (
+        source_path.open("rb") as src,
+        staged_path.open("wb") as dst,
+        Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=True,
+        ) as progress,
+    ):
+        task = progress.add_task("Staging", total=source_size if source_size > 0 else None)
+        while True:
+            chunk = src.read(chunk_size)
+            if not chunk:
+                break
+            dst.write(chunk)
+            progress.update(task, advance=len(chunk))
 
 
 def is_network_mount_path(path: Path) -> bool:

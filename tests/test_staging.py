@@ -1,5 +1,6 @@
 from pathlib import Path
 from io import StringIO
+import errno
 
 import pytest
 from rich.console import Console
@@ -63,3 +64,33 @@ def test_stage_source_file_copies_to_staging(tmp_path: Path) -> None:
     assert staged.exists()
     assert staged.parent == staging_dir
     assert staged.read_bytes() == source.read_bytes()
+
+
+def test_stage_source_file_retries_on_eio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"abcdef")
+    staging_dir = tmp_path / "staging"
+    console = Console(file=StringIO(), force_terminal=False, color_system=None)
+
+    calls = {"count": 0}
+
+    def _fake_copy_file_chunked(
+        *,
+        source_path: Path,
+        staged_path: Path,
+        source_size: int,
+        console: Console,
+        show_progress: bool,
+    ) -> None:
+        del source_path, source_size, console, show_progress
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError(errno.EIO, "Input/output error")
+        staged_path.write_bytes(b"ok")
+
+    monkeypatch.setattr("walkmarr.process._copy_file_chunked", _fake_copy_file_chunked)
+    monkeypatch.setattr("walkmarr.process.time.sleep", lambda _seconds: None)
+
+    staged = stage_source_file(source, staging_dir, console, show_progress=False)
+    assert calls["count"] == 2
+    assert staged.read_bytes() == b"ok"
