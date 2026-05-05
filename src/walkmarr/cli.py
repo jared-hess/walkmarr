@@ -18,7 +18,7 @@ from walkmarr.config import (
 )
 from walkmarr.exceptions import ConfigError, ProviderError, WalkmarrError
 from walkmarr.models import AppConfig
-from walkmarr.process import ensure_required_tools, process_media_item
+from walkmarr.process import ensure_required_tools, process_media_items
 from walkmarr.providers.radarr import RadarrProvider
 from walkmarr.providers.sonarr import SonarrProvider
 
@@ -209,25 +209,18 @@ def sonarr_convert(
         if not items:
             raise ProviderError(f"No episode files found for Sonarr series '{selected_title}'")
 
-        converted = 0
-        skipped = 0
-        for item in items:
-            result = process_media_item(
-                config=app_config,
-                media_item=item,
-                provider_name="sonarr",
-                profile=profile,
-                atomicparsley_bin=atomicparsley_bin,
-                console=runtime.console,
-                dry_run=dry_run,
-                overwrite=overwrite,
-            )
-            if result.status in {"converted", "dry-run"}:
-                converted += 1
-            else:
-                skipped += 1
+        result = process_media_items(
+            config=app_config,
+            media_items=items,
+            provider_name="sonarr",
+            profile=profile,
+            atomicparsley_bin=atomicparsley_bin,
+            console=runtime.console,
+            dry_run=dry_run,
+            overwrite=overwrite,
+        )
 
-        runtime.console.print(f"Done. Processed: {converted}, Skipped: {skipped}")
+        runtime.console.print(f"Done. Processed: {result.converted}, Skipped: {result.skipped}")
     except (WalkmarrError, ConfigError, ProviderError) as exc:
         raise _as_click_error(exc) from exc
 
@@ -305,9 +298,9 @@ def radarr_convert(
             allow_unmapped_existing_local=app_config.allow_unmapped_existing_local,
         )
 
-        result = process_media_item(
+        result = process_media_items(
             config=app_config,
-            media_item=media_item,
+            media_items=[media_item],
             provider_name="radarr",
             profile=profile,
             atomicparsley_bin=atomicparsley_bin,
@@ -315,11 +308,7 @@ def radarr_convert(
             dry_run=dry_run,
             overwrite=overwrite,
         )
-
-        if result.status == "skipped":
-            runtime.console.print(f"Skipped existing output: {result.output_path}")
-        else:
-            runtime.console.print(f"Done: {result.output_path}")
+        runtime.console.print(f"Done. Processed: {result.converted}, Skipped: {result.skipped}")
     except (WalkmarrError, ConfigError, ProviderError) as exc:
         raise _as_click_error(exc) from exc
 

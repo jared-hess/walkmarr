@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import queue
 import shutil
 import shlex
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +39,26 @@ class ProcessResult:
     output_path: Path
 
 
+@dataclass(frozen=True)
+class BatchProcessResult:
+    """Aggregated batch processing result."""
+
+    converted: int
+    skipped: int
+
+
+@dataclass(frozen=True)
+class PreparedMediaItem:
+    """Prepared item containing source path used for conversion."""
+
+    media_item: MediaItem
+    processing_source_path: Path
+    probe_source_path: Path
+    staging_applied: bool
+    staged_file_path: Path | None
+    skip_only: bool = False
+
+
 def ensure_required_tools() -> str:
     """Ensure required binaries are present and return AtomicParsley name."""
     require_binary("ffmpeg")
@@ -59,32 +81,229 @@ def process_media_item(
     if not media_item.source_path.exists():
         raise WalkmarrError(f"Source file does not exist after mapping: {media_item.source_path}")
 
+    prepared = _prepare_media_item(
+        config=config,
+        media_item=media_item,
+        console=console,
+        dry_run=dry_run,
+        overwrite=overwrite,
+    )
+    try:
+        return _process_prepared_media_item(
+            config=config,
+            prepared=prepared,
+            provider_name=provider_name,
+            profile=profile,
+            atomicparsley_bin=atomicparsley_bin,
+            console=console,
+            dry_run=dry_run,
+            overwrite=overwrite,
+        )
+    finally:
+        _cleanup_staged_file(prepared)
+
+
+def process_media_items(
+    *,
+    config: AppConfig,
+    media_items: list[MediaItem],
+    provider_name: str,
+    profile: VideoProfile,
+    atomicparsley_bin: str,
+    console: Console,
+    dry_run: bool,
+    overwrite: bool,
+) -> BatchProcessResult:
+    """Process a list of media items with stage/convert overlap."""
+    if dry_run or len(media_items) <= 1:
+        converted = 0
+        skipped = 0
+        for item in media_items:
+            result = process_media_item(
+                config=config,
+                media_item=item,
+                provider_name=provider_name,
+                profile=profile,
+                atomicparsley_bin=atomicparsley_bin,
+                console=console,
+                dry_run=dry_run,
+                overwrite=overwrite,
+            )
+            if result.status in {"converted", "dry-run"}:
+                converted += 1
+            else:
+                skipped += 1
+        return BatchProcessResult(converted=converted, skipped=skipped)
+
+    work_queue: queue.Queue[PreparedMediaItem | object] = queue.Queue(maxsize=1)
+    sentinel = object()
+    stop_event = threading.Event()
+    result_lock = threading.Lock()
+    counts = {"converted": 0, "skipped": 0}
+    first_error: list[Exception] = []
+
+    def stage_worker() -> None:
+        try:
+            for item in media_items:
+                if stop_event.is_set():
+                    break
+                prepared = _prepare_media_item(
+                    config=config,
+                    media_item=item,
+                    console=console,
+                    dry_run=False,
+                    overwrite=overwrite,
+                )
+                if not _queue_put_with_stop(work_queue, prepared, stop_event):
+                    _cleanup_staged_file(prepared)
+                    break
+        except Exception as exc:  # pragma: no cover - covered via integration flow
+            if not first_error:
+                first_error.append(exc)
+            stop_event.set()
+        finally:
+            work_queue.put(sentinel)
+
+    def convert_worker() -> None:
+        while True:
+            queued = work_queue.get()
+            if queued is sentinel:
+                break
+            if not isinstance(queued, PreparedMediaItem):
+                continue
+
+            prepared = queued
+            try:
+                if prepared.skip_only:
+                    with result_lock:
+                        counts["skipped"] += 1
+                    continue
+
+                if stop_event.is_set():
+                    continue
+
+                result = _process_prepared_media_item(
+                    config=config,
+                    prepared=prepared,
+                    provider_name=provider_name,
+                    profile=profile,
+                    atomicparsley_bin=atomicparsley_bin,
+                    console=console,
+                    dry_run=False,
+                    overwrite=overwrite,
+                )
+                with result_lock:
+                    if result.status == "converted":
+                        counts["converted"] += 1
+                    else:
+                        counts["skipped"] += 1
+            except Exception as exc:  # pragma: no cover - covered via integration flow
+                if not first_error:
+                    first_error.append(exc)
+                stop_event.set()
+            finally:
+                _cleanup_staged_file(prepared)
+
+    stage_thread = threading.Thread(target=stage_worker, name="walkmarr-stage-worker", daemon=True)
+    convert_thread = threading.Thread(
+        target=convert_worker,
+        name="walkmarr-convert-worker",
+        daemon=True,
+    )
+
+    stage_thread.start()
+    convert_thread.start()
+    stage_thread.join()
+    convert_thread.join()
+
+    if first_error:
+        exc = first_error[0]
+        if isinstance(exc, WalkmarrError):
+            raise exc
+        raise WalkmarrError(str(exc)) from exc
+
+    return BatchProcessResult(converted=counts["converted"], skipped=counts["skipped"])
+
+
+def _prepare_media_item(
+    *,
+    config: AppConfig,
+    media_item: MediaItem,
+    console: Console,
+    dry_run: bool,
+    overwrite: bool,
+) -> PreparedMediaItem:
+    if not media_item.source_path.exists():
+        raise WalkmarrError(f"Source file does not exist after mapping: {media_item.source_path}")
+
+    if media_item.output_path.exists() and not overwrite:
+        return PreparedMediaItem(
+            media_item=media_item,
+            processing_source_path=media_item.source_path,
+            probe_source_path=media_item.source_path,
+            staging_applied=False,
+            staged_file_path=None,
+            skip_only=True,
+        )
+
+    use_staging = should_stage_source_path(media_item.source_path, config.staging_mode)
+    if not use_staging:
+        return PreparedMediaItem(
+            media_item=media_item,
+            processing_source_path=media_item.source_path,
+            probe_source_path=media_item.source_path,
+            staging_applied=False,
+            staged_file_path=None,
+        )
+
+    planned_stage = planned_staging_path(media_item.source_path, config.staging_directory)
+    if dry_run:
+        return PreparedMediaItem(
+            media_item=media_item,
+            processing_source_path=planned_stage,
+            probe_source_path=media_item.source_path,
+            staging_applied=True,
+            staged_file_path=None,
+        )
+
+    try:
+        staged_source = stage_source_file(media_item.source_path, config.staging_directory, console)
+    except OSError as exc:
+        raise WalkmarrError(f"Failed to stage source file '{media_item.source_path}': {exc}") from exc
+
+    return PreparedMediaItem(
+        media_item=media_item,
+        processing_source_path=staged_source,
+        probe_source_path=staged_source,
+        staging_applied=True,
+        staged_file_path=staged_source,
+    )
+
+
+def _process_prepared_media_item(
+    *,
+    config: AppConfig,
+    prepared: PreparedMediaItem,
+    provider_name: str,
+    profile: VideoProfile,
+    atomicparsley_bin: str,
+    console: Console,
+    dry_run: bool,
+    overwrite: bool,
+) -> ProcessResult:
+    media_item = prepared.media_item
     final_output = media_item.output_path
+
+    if prepared.skip_only:
+        return ProcessResult(status="skipped", output_path=final_output)
+
     if final_output.exists() and not overwrite:
         return ProcessResult(status="skipped", output_path=final_output)
 
-    use_staging = should_stage_source_path(media_item.source_path, config.staging_mode)
-    staged_source_path: Path | None = None
-    processing_source_path = media_item.source_path
-    if use_staging:
-        planned_stage_path = planned_staging_path(media_item.source_path, config.staging_directory)
-        if dry_run:
-            processing_source_path = planned_stage_path
-        else:
-            try:
-                staged_source_path = stage_source_file(
-                    media_item.source_path,
-                    config.staging_directory,
-                    console,
-                )
-            except OSError as exc:
-                raise WalkmarrError(f"Failed to stage source file '{media_item.source_path}': {exc}") from exc
-            processing_source_path = staged_source_path
-
-    probe = probe_media(processing_source_path)
+    probe = probe_media(prepared.probe_source_path)
     tmp_output = final_output.with_name(f"{final_output.stem}.tmp.mp4")
     ffmpeg_plan = build_ffmpeg_command(
-        source_path=processing_source_path,
+        source_path=prepared.processing_source_path,
         tmp_output_path=tmp_output,
         profile=profile,
         probe=probe,
@@ -103,15 +322,14 @@ def process_media_item(
         metadata=metadata,
         ffmpeg_plan=ffmpeg_plan,
         tag_command=tag_command,
-        staging_applied=use_staging,
-        staging_path=processing_source_path if use_staging else None,
+        staging_applied=prepared.staging_applied,
+        staging_path=prepared.processing_source_path if prepared.staging_applied else None,
     )
 
     if dry_run:
         return ProcessResult(status="dry-run", output_path=final_output)
 
     final_output.parent.mkdir(parents=True, exist_ok=True)
-
     if tmp_output.exists():
         tmp_output.unlink()
 
@@ -123,11 +341,29 @@ def process_media_item(
         if tmp_output.exists():
             tmp_output.unlink()
         raise WalkmarrError(f"Failed processing '{media_item.source_path}': {exc}") from exc
-    finally:
-        if staged_source_path is not None and staged_source_path.exists():
-            staged_source_path.unlink()
 
     return ProcessResult(status="converted", output_path=final_output)
+
+
+def _cleanup_staged_file(prepared: PreparedMediaItem) -> None:
+    path = prepared.staged_file_path
+    if path is not None and path.exists():
+        path.unlink()
+
+
+def _queue_put_with_stop(
+    work_queue: queue.Queue[PreparedMediaItem | object],
+    item: PreparedMediaItem,
+    stop_event: threading.Event,
+) -> bool:
+    while True:
+        if stop_event.is_set():
+            return False
+        try:
+            work_queue.put(item, timeout=0.2)
+            return True
+        except queue.Full:
+            continue
 
 
 def _build_tag_command(
