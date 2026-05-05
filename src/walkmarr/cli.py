@@ -377,7 +377,7 @@ def _prompt_bootstrap_payload(base_payload: dict[str, object]) -> dict[str, obje
 
         providers[provider_key] = provider_config
 
-    shows_remote = click.prompt("Provider shows root path", default="/tv", type=str)
+    shows_remote = click.prompt("Provider shows root path", default="/shows", type=str)
     shows_local = click.prompt("Local shows root path", default="/mnt/media/shows", type=str)
     movies_remote = click.prompt("Provider movies root path", default="/movies", type=str)
     movies_local = click.prompt("Local movies root path", default="/mnt/media/movies", type=str)

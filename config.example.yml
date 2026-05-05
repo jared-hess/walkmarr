@@ -8,7 +8,7 @@ providers:
     api_key_env: "RADARR_API_KEY"
 
 path_mappings:
-  - remote: "/tv"
+  - remote: "/shows"
     local: "/mnt/media/shows"
 
   - remote: "/movies"
