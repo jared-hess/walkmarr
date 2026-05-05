@@ -50,12 +50,14 @@ uv sync
 
 ```bash
 uv run walkmarr config init
-cp ~/.config/walkmarr/.env.example ~/.config/walkmarr/.env
 ```
 
 Walkmarr also auto-loads a `.env` file located next to the config file (for
 example `./.env` when using `./walkmarr.yml`). Existing shell env vars take
 precedence.
+
+If you use `api_key_env` in config, create the sibling `.env` file yourself or
+export the variables in your shell.
 
 You can bootstrap with prompts:
 

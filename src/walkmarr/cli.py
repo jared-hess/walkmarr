@@ -121,7 +121,6 @@ def config_init(
             resolved_target_path,
             payload=payload,
             force=force,
-            write_env_example=True,
         )
     except ConfigError as exc:
         raise _as_click_error(exc) from exc

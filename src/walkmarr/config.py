@@ -84,15 +84,13 @@ def bootstrap_config(
     *,
     payload: dict[str, Any],
     force: bool,
-    write_env_example: bool,
 ) -> list[Path]:
-    """Write bootstrap config and optional sibling .env.example file.
+    """Write bootstrap config.
 
     Args:
         target_path: Destination config path.
         payload: Config payload to serialize as YAML.
         force: Overwrite existing files when true.
-        write_env_example: Whether to write .env.example next to config.
 
     Returns:
         Paths that were written.
@@ -105,17 +103,6 @@ def bootstrap_config(
 
     target_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     written.append(target_path)
-
-    if write_env_example:
-        env_example_path = target_path.parent / ".env.example"
-        if env_example_path.exists() and not force:
-            return written
-        env_example_path.write_text(
-            "SONARR_API_KEY=replace_with_sonarr_api_key\n"
-            "RADARR_API_KEY=replace_with_radarr_api_key\n",
-            encoding="utf-8",
-        )
-        written.append(env_example_path)
 
     return written
 
