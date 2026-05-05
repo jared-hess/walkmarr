@@ -520,7 +520,10 @@ def stage_source_file(
     chunk_size = 8 * 1024 * 1024
     try:
         if not show_progress:
+            console.print(f"Staging source: {source_path}")
+            console.print(f"  -> {staged_path}")
             shutil.copy2(source_path, staged_path)
+            console.print("Staging complete.")
             return staged_path
 
         with (
