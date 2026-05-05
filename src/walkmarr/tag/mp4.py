@@ -25,9 +25,10 @@ def build_tv_tag_command(
     show_title: str,
     season_number: int,
     episode_number: int,
+    tv_episode_id: str | None = None,
 ) -> list[str]:
     """Build AtomicParsley command for TV metadata tags."""
-    episode_id = f"S{season_number:02d}E{episode_number:02d}"
+    episode_id = tv_episode_id or f"S{season_number:02d}E{episode_number:02d}"
     return [
         atomicparsley_bin,
         str(media_path),

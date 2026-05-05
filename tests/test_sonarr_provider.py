@@ -109,3 +109,42 @@ def test_build_episode_media_items() -> None:
         "/mnt/d/ipod/shows/Futurama/Season 1/Futurama - S01E01 - Space Pilot 3000.mp4"
     )
     assert item.title == "Space Pilot 3000"
+
+
+def test_build_episode_media_items_multi_episode_range() -> None:
+    provider = _provider(FakeSession({}))
+    episodes = [
+        {
+            "id": 101,
+            "title": "Part 1",
+            "seasonNumber": 1,
+            "episodeNumber": 1,
+            "hasFile": True,
+            "episodeFileId": 201,
+        },
+        {
+            "id": 102,
+            "title": "Part 2",
+            "seasonNumber": 1,
+            "episodeNumber": 2,
+            "hasFile": True,
+            "episodeFileId": 201,
+        },
+    ]
+    episode_files = [{"id": 201, "path": "Z:/shows/Futurama/Season 1/S01E01E02.mkv"}]
+    items = provider.build_media_items(
+        series_title="Futurama",
+        episodes=episodes,
+        episode_files=episode_files,
+        profile_name="animation",
+        path_mappings=[PathMapping(remote="Z:/shows", local=Path("/mnt/z/shows"))],
+        output_root=Path("/mnt/d/ipod/shows"),
+    )
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.episode_id == "S01E01-E02"
+    assert item.episode_end_number == 2
+    assert item.output_path == Path(
+        "/mnt/d/ipod/shows/Futurama/Season 1/Futurama - S01E01-E02 - Part 1.mp4"
+    )

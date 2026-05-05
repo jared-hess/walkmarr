@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-import warnings
 
 import requests
 
@@ -101,17 +100,11 @@ class SonarrProvider:
             if not related_episodes:
                 continue
 
-            if len(related_episodes) > 1:
-                warnings.warn(
-                    "Multi-episode file detected in Sonarr; using first episode metadata. "
-                    "TODO: add full multi-episode support.",
-                    stacklevel=2,
-                )
-
-            selected_episode = sorted(
+            sorted_related_episodes = sorted(
                 related_episodes,
                 key=lambda ep: (int(ep.get("seasonNumber", 0)), int(ep.get("episodeNumber", 0))),
-            )[0]
+            )
+            selected_episode = sorted_related_episodes[0]
 
             remote_path = file_record.get("path")
             if not isinstance(remote_path, str) or not remote_path:
@@ -125,6 +118,17 @@ class SonarrProvider:
 
             season = int(selected_episode.get("seasonNumber", 0))
             episode_num = int(selected_episode.get("episodeNumber", 0))
+            episode_end_num: int | None = None
+            if len(sorted_related_episodes) > 1:
+                same_season_episodes = [
+                    int(ep.get("episodeNumber", episode_num))
+                    for ep in sorted_related_episodes
+                    if int(ep.get("seasonNumber", season)) == season
+                ]
+                if same_season_episodes:
+                    candidate_end = max(same_season_episodes)
+                    if candidate_end > episode_num:
+                        episode_end_num = candidate_end
             episode_title = str(selected_episode.get("title", ""))
 
             output_path = build_tv_output_path(
@@ -133,7 +137,12 @@ class SonarrProvider:
                 season_number=season,
                 episode_number=episode_num,
                 episode_title=episode_title,
+                episode_end_number=episode_end_num,
             )
+
+            episode_id = f"S{season:02d}E{episode_num:02d}"
+            if episode_end_num is not None:
+                episode_id = f"S{season:02d}E{episode_num:02d}-E{episode_end_num:02d}"
 
             items.append(
                 MediaItem(
@@ -146,7 +155,8 @@ class SonarrProvider:
                     series_title=series_title,
                     season_number=season,
                     episode_number=episode_num,
-                    episode_id=f"S{season:02d}E{episode_num:02d}",
+                    episode_end_number=episode_end_num,
+                    episode_id=episode_id,
                 )
             )
 

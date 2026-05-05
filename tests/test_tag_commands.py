@@ -20,6 +20,20 @@ def test_tv_tag_command_contains_required_fields() -> None:
     assert "--TVEpisode" in cmd and cmd[cmd.index("--TVEpisode") + 1] == "S01E01"
 
 
+def test_tv_tag_command_accepts_episode_id_override() -> None:
+    cmd = build_tv_tag_command(
+        "AtomicParsley",
+        Path("/tmp/episode.mp4"),
+        episode_title="Pilot",
+        show_title="Show",
+        season_number=1,
+        episode_number=1,
+        tv_episode_id="S01E01-E02",
+    )
+    assert "--TVEpisode" in cmd
+    assert cmd[cmd.index("--TVEpisode") + 1] == "S01E01-E02"
+
+
 def test_movie_tag_command_contains_required_fields() -> None:
     cmd = build_movie_tag_command(
         "AtomicParsley",

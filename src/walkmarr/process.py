@@ -153,6 +153,7 @@ def process_media_items(
                     console=console,
                     dry_run=False,
                     overwrite=overwrite,
+                    show_staging_progress=False,
                 )
                 if not _queue_put_with_stop(work_queue, prepared, stop_event):
                     _cleanup_staged_file(prepared)
@@ -232,6 +233,7 @@ def _prepare_media_item(
     console: Console,
     dry_run: bool,
     overwrite: bool,
+    show_staging_progress: bool = True,
 ) -> PreparedMediaItem:
     if not media_item.source_path.exists():
         raise WalkmarrError(f"Source file does not exist after mapping: {media_item.source_path}")
@@ -267,7 +269,12 @@ def _prepare_media_item(
         )
 
     try:
-        staged_source = stage_source_file(media_item.source_path, config.staging_directory, console)
+        staged_source = stage_source_file(
+            media_item.source_path,
+            config.staging_directory,
+            console,
+            show_progress=show_staging_progress,
+        )
     except OSError as exc:
         raise WalkmarrError(f"Failed to stage source file '{media_item.source_path}': {exc}") from exc
 
@@ -397,6 +404,7 @@ def _build_tag_command(
             show_title=tag_show_title,
             season_number=tag_season,
             episode_number=tag_episode,
+            tv_episode_id=media_item.episode_id,
         )
         metadata: dict[str, str | int | None] = {
             "kind": "TV Show",
@@ -404,7 +412,7 @@ def _build_tag_command(
             "show": tag_show_title,
             "season": tag_season,
             "episode": tag_episode,
-            "episode_id": f"S{tag_season:02d}E{tag_episode:02d}",
+            "episode_id": media_item.episode_id or f"S{tag_season:02d}E{tag_episode:02d}",
             "artist": tag_show_title,
             "album": tag_show_title,
         }
@@ -493,17 +501,28 @@ def planned_staging_path(source_path: Path, staging_directory: Path) -> Path:
     return staging_directory / f"{source_path.stem}.{digest}{suffix}"
 
 
-def stage_source_file(source_path: Path, staging_directory: Path, console: Console) -> Path:
+def stage_source_file(
+    source_path: Path,
+    staging_directory: Path,
+    console: Console,
+    *,
+    show_progress: bool = True,
+) -> Path:
     """Copy source file to local staging directory and return staged path."""
     staged_path = planned_staging_path(source_path, staging_directory)
     staged_path.parent.mkdir(parents=True, exist_ok=True)
 
     source_size = source_path.stat().st_size
-    console.print(f"Staging source: {source_path}")
-    console.print(f"  -> {staged_path}")
+    if show_progress:
+        console.print(f"Staging source: {source_path}")
+        console.print(f"  -> {staged_path}")
 
     chunk_size = 8 * 1024 * 1024
     try:
+        if not show_progress:
+            shutil.copy2(source_path, staged_path)
+            return staged_path
+
         with (
             source_path.open("rb") as src,
             staged_path.open("wb") as dst,
@@ -529,7 +548,8 @@ def stage_source_file(source_path: Path, staging_directory: Path, console: Conso
             staged_path.unlink()
         raise
 
-    console.print("Staging complete.")
+    if show_progress:
+        console.print("Staging complete.")
     return staged_path
 
 

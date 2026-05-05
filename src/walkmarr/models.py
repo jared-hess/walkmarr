@@ -51,6 +51,7 @@ class MediaItem:
     series_title: str | None = None
     season_number: int | None = None
     episode_number: int | None = None
+    episode_end_number: int | None = None
     episode_id: str | None = None
     movie_title: str | None = None
     year: int | None = None
