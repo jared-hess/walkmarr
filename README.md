@@ -50,13 +50,19 @@ uv sync
 
 ```bash
 cp config.example.yml walkmarr.yml
-export SONARR_API_KEY="..."
-export RADARR_API_KEY="..."
+cp .env.example .env
 ```
 
 Walkmarr also auto-loads a `.env` file located next to the config file (for
 example `./.env` when using `./walkmarr.yml`). Existing shell env vars take
 precedence.
+
+You can still export variables directly in your shell if preferred:
+
+```bash
+export SONARR_API_KEY="..."
+export RADARR_API_KEY="..."
+```
 
 `walkmarr` looks for config in this order unless `--config` is passed:
 
