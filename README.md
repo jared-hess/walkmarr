@@ -59,6 +59,10 @@ precedence.
 If you use `api_key_env` in config, create the sibling `.env` file yourself or
 export the variables in your shell.
 
+Staging defaults to `auto`: Walkmarr detects network-like source mounts and
+copies source media to local temp storage before probing/conversion. You can
+set `staging.mode` to `always` or `never` in config.
+
 You can bootstrap with prompts:
 
 ```bash

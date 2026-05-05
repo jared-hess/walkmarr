@@ -18,6 +18,10 @@ output_roots:
   shows: "/mnt/walkmarr/shows"
   movies: "/mnt/walkmarr/movies"
 
+staging:
+  mode: "auto"
+  directory: "/tmp/walkmarr-staging"
+
 default_profiles:
   sonarr: "animation"
   radarr: "movie"

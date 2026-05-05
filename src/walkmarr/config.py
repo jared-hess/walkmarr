@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from dotenv import load_dotenv
 import yaml
@@ -39,6 +39,7 @@ def default_bootstrap_payload() -> dict[str, Any]:
             {"remote": "/movies", "local": "/mnt/media/movies"},
         ],
         "output_roots": {"shows": "/mnt/walkmarr/shows", "movies": "/mnt/walkmarr/movies"},
+        "staging": {"mode": "auto", "directory": "/tmp/walkmarr-staging"},
         "default_profiles": {"sonarr": "animation", "radarr": "movie"},
         "profiles": {
             "animation": {
@@ -260,6 +261,20 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
             normalized[title] = values
         overrides[provider_name] = normalized
 
+    staging_raw = payload.get("staging", {})
+    if not isinstance(staging_raw, dict):
+        raise ConfigError("staging must be a mapping")
+    staging_mode_raw = staging_raw.get("mode", "auto")
+    if not isinstance(staging_mode_raw, str):
+        raise ConfigError("staging.mode must be a string: auto, always, or never")
+    staging_mode = staging_mode_raw.casefold()
+    if staging_mode not in {"auto", "always", "never"}:
+        raise ConfigError("staging.mode must be one of: auto, always, never")
+    validated_staging_mode = cast(Literal["auto", "always", "never"], staging_mode)
+    staging_directory_raw = staging_raw.get("directory", "/tmp/walkmarr-staging")
+    if not isinstance(staging_directory_raw, str) or not staging_directory_raw.strip():
+        raise ConfigError("staging.directory must be a non-empty string")
+
     app_config = AppConfig(
         providers=providers,
         path_mappings=path_mappings,
@@ -267,6 +282,8 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
         default_profiles={"sonarr": str(default_profiles["sonarr"]), "radarr": str(default_profiles["radarr"] )},
         profiles=profiles,
         overrides=overrides,
+        staging_mode=validated_staging_mode,
+        staging_directory=Path(staging_directory_raw),
         allow_unmapped_existing_local=bool(payload.get("allow_unmapped_existing_local", False)),
     )
 

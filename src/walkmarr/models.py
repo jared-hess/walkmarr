@@ -66,4 +66,6 @@ class AppConfig:
     default_profiles: dict[str, str]
     profiles: dict[str, VideoProfile]
     overrides: dict[str, dict[str, dict[str, Any]]]
+    staging_mode: Literal["auto", "always", "never"] = "auto"
+    staging_directory: Path = Path("/tmp/walkmarr-staging")
     allow_unmapped_existing_local: bool = False
