@@ -54,6 +54,10 @@ export SONARR_API_KEY="..."
 export RADARR_API_KEY="..."
 ```
 
+Walkmarr also auto-loads a `.env` file located next to the config file (for
+example `./.env` when using `./walkmarr.yml`). Existing shell env vars take
+precedence.
+
 `walkmarr` looks for config in this order unless `--config` is passed:
 
 1. `./walkmarr.yml`

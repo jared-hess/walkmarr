@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 import yaml
 
 from walkmarr.exceptions import ConfigError
@@ -78,6 +79,7 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
         Tuple of resolved config path and validated AppConfig.
     """
     config_path = discover_config_path(explicit_path)
+    _load_dotenv(config_path)
 
     try:
         payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -170,6 +172,13 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
     _validate_profiles_exist(app_config)
     _validate_output_roots_are_not_inside_sources(app_config)
     return config_path, app_config
+
+
+def _load_dotenv(config_path: Path) -> None:
+    """Load environment variables from a sibling .env file when present."""
+    dotenv_path = config_path.parent / ".env"
+    if dotenv_path.exists():
+        load_dotenv(dotenv_path=dotenv_path, override=False)
 
 
 def _validate_profiles_exist(config: AppConfig) -> None:
