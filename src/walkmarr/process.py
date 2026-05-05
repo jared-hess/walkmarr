@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
+from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 
 from walkmarr.config import sonarr_specials_show_name
 from walkmarr.convert.video import (
@@ -70,7 +71,14 @@ def process_media_item(
         if dry_run:
             processing_source_path = planned_stage_path
         else:
-            staged_source_path = stage_source_file(media_item.source_path, config.staging_directory)
+            try:
+                staged_source_path = stage_source_file(
+                    media_item.source_path,
+                    config.staging_directory,
+                    console,
+                )
+            except OSError as exc:
+                raise WalkmarrError(f"Failed to stage source file '{media_item.source_path}': {exc}") from exc
             processing_source_path = staged_source_path
 
     probe = probe_media(processing_source_path)
@@ -249,11 +257,43 @@ def planned_staging_path(source_path: Path, staging_directory: Path) -> Path:
     return staging_directory / f"{source_path.stem}.{digest}{suffix}"
 
 
-def stage_source_file(source_path: Path, staging_directory: Path) -> Path:
+def stage_source_file(source_path: Path, staging_directory: Path, console: Console) -> Path:
     """Copy source file to local staging directory and return staged path."""
     staged_path = planned_staging_path(source_path, staging_directory)
     staged_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, staged_path)
+
+    source_size = source_path.stat().st_size
+    console.print(f"Staging source: {source_path}")
+    console.print(f"  -> {staged_path}")
+
+    chunk_size = 8 * 1024 * 1024
+    try:
+        with (
+            source_path.open("rb") as src,
+            staged_path.open("wb") as dst,
+            Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TransferSpeedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+                transient=True,
+            ) as progress,
+        ):
+            task = progress.add_task("Staging", total=source_size if source_size > 0 else None)
+            while True:
+                chunk = src.read(chunk_size)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                progress.update(task, advance=len(chunk))
+        shutil.copystat(source_path, staged_path)
+    except OSError:
+        if staged_path.exists():
+            staged_path.unlink()
+        raise
+
+    console.print("Staging complete.")
     return staged_path
 
 

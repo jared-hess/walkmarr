@@ -1,10 +1,13 @@
 from pathlib import Path
+from io import StringIO
 
 import pytest
+from rich.console import Console
 
 from walkmarr.process import (
     is_network_mount_path,
     planned_staging_path,
+    stage_source_file,
     should_stage_source_path,
 )
 
@@ -47,3 +50,16 @@ def test_is_network_mount_path_false_for_ext4(monkeypatch: pytest.MonkeyPatch) -
         ],
     )
     assert not is_network_mount_path(Path("/mnt/local/movies/file.mkv"))
+
+
+def test_stage_source_file_copies_to_staging(tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"abcdef" * 1024)
+    staging_dir = tmp_path / "staging"
+    console = Console(file=StringIO(), force_terminal=False, color_system=None)
+
+    staged = stage_source_file(source, staging_dir, console)
+
+    assert staged.exists()
+    assert staged.parent == staging_dir
+    assert staged.read_bytes() == source.read_bytes()
