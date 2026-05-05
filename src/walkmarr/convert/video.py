@@ -8,6 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from walkmarr.convert.audio_select import AudioStreamInfo, normalize_language_tag, select_audio_stream
 from walkmarr.exceptions import ConversionError
 from walkmarr.models import VideoProfile
 
@@ -19,9 +20,7 @@ class ProbeInfo:
     source_video_bitrate_kbps: int | None
     width: int | None
     height: int | None
-    audio_channels: int | None
-    audio_map_selector: str = "0:a:0"
-    audio_language: str | None = None
+    audio_streams: list[AudioStreamInfo]
 
 
 @dataclass(frozen=True)
@@ -30,6 +29,8 @@ class ConversionPlan:
 
     command: list[str]
     source_video_bitrate_kbps: int | None
+    selected_audio_index: int
+    selected_audio_language: str | None
     maxrate_kbps: int
     audio_channels: int
     audio_bitrate_kbps: int
@@ -57,7 +58,7 @@ def probe_media(source_path: Path, ffprobe_bin: str = "ffprobe") -> ProbeInfo:
         "-v",
         "error",
         "-show_entries",
-        "stream=index,codec_type,bit_rate,width,height,channels:stream_tags=language:stream_disposition=default",
+        "stream=index,codec_type,bit_rate,width,height,channels,codec_name,channel_layout:stream_tags=language,title:stream_disposition=default",
         "-of",
         "json",
         str(source_path),
@@ -81,7 +82,7 @@ def probe_media(source_path: Path, ffprobe_bin: str = "ffprobe") -> ProbeInfo:
         streams = []
 
     video_stream: dict[str, object] | None = None
-    audio_streams: list[dict[str, object]] = []
+    audio_streams: list[AudioStreamInfo] = []
     for stream in streams:
         if not isinstance(stream, dict):
             continue
@@ -89,34 +90,18 @@ def probe_media(source_path: Path, ffprobe_bin: str = "ffprobe") -> ProbeInfo:
         if codec_type == "video" and video_stream is None:
             video_stream = stream
         elif codec_type == "audio":
-            audio_streams.append(stream)
-
-    selected_audio_stream = _select_preferred_audio_stream(audio_streams)
+            parsed = _parse_audio_stream(stream)
+            if parsed is not None:
+                audio_streams.append(parsed)
 
     video_bitrate_kbps = _parse_kbps(video_stream.get("bit_rate") if video_stream else None)
     width = _parse_int(video_stream.get("width") if video_stream else None)
     height = _parse_int(video_stream.get("height") if video_stream else None)
-    audio_channels = _parse_int(selected_audio_stream.get("channels") if selected_audio_stream else None)
-
-    audio_map_selector = "0:a:0"
-    audio_language: str | None = None
-    if selected_audio_stream is not None:
-        audio_index = _parse_int(selected_audio_stream.get("index"))
-        if audio_index is not None:
-            audio_map_selector = f"0:{audio_index}"
-        tags = selected_audio_stream.get("tags")
-        if isinstance(tags, dict):
-            raw_language = tags.get("language")
-            if isinstance(raw_language, str) and raw_language.strip():
-                audio_language = raw_language.strip()
-
     return ProbeInfo(
         source_video_bitrate_kbps=video_bitrate_kbps,
         width=width,
         height=height,
-        audio_channels=audio_channels,
-        audio_map_selector=audio_map_selector,
-        audio_language=audio_language,
+        audio_streams=audio_streams,
     )
 
 
@@ -141,7 +126,14 @@ def build_ffmpeg_command(
     """Build ffmpeg command for Walkmarr conversion."""
     maxrate_kbps = calculate_maxrate_kbps(probe.source_video_bitrate_kbps, profile)
 
-    source_channels = probe.audio_channels if probe.audio_channels is not None else 2
+    selected_audio = select_audio_stream(
+        probe.audio_streams,
+        preferred_languages=list(profile.preferred_audio_languages),
+    )
+    if selected_audio is None:
+        raise ConversionError(f"No audio streams found in source media: {source_path}")
+
+    source_channels = selected_audio.channels if selected_audio.channels is not None else 2
     if source_channels <= 1:
         audio_channels = 1
         audio_bitrate_kbps = profile.audio_bitrate_mono_kbps
@@ -160,7 +152,9 @@ def build_ffmpeg_command(
         "-map",
         "0:v:0",
         "-map",
-        probe.audio_map_selector,
+        f"0:{selected_audio.index}",
+        "-sn",
+        "-dn",
         "-vf",
         filter_expr,
         "-c:v",
@@ -195,6 +189,8 @@ def build_ffmpeg_command(
     return ConversionPlan(
         command=command,
         source_video_bitrate_kbps=probe.source_video_bitrate_kbps,
+        selected_audio_index=selected_audio.index,
+        selected_audio_language=selected_audio.language_normalized,
         maxrate_kbps=maxrate_kbps,
         audio_channels=audio_channels,
         audio_bitrate_kbps=audio_bitrate_kbps,
@@ -229,49 +225,44 @@ def _parse_kbps(value: object) -> int | None:
     return max(1, bits_per_second // 1000)
 
 
-def _select_preferred_audio_stream(
-    audio_streams: list[dict[str, object]],
-) -> dict[str, object] | None:
-    if not audio_streams:
-        return None
-
-    ranked = sorted(audio_streams, key=_audio_stream_rank)
-    return ranked[0]
-
-
-def _audio_stream_rank(stream: dict[str, object]) -> tuple[int, int, int]:
-    language = _audio_language(stream)
-    is_english = 0 if _is_english_language(language) else 1
-    is_default = 0 if _is_default_audio_stream(stream) else 1
+def _parse_audio_stream(stream: dict[str, object]) -> AudioStreamInfo | None:
     index = _parse_int(stream.get("index"))
-    index_rank = index if index is not None else 999_999
-    return (is_english, is_default, index_rank)
-
-
-def _audio_language(stream: dict[str, object]) -> str | None:
-    tags = stream.get("tags")
-    if not isinstance(tags, dict):
+    if index is None:
         return None
-    language = tags.get("language")
-    if isinstance(language, str) and language.strip():
-        return language.strip().casefold()
-    return None
 
+    tags = stream.get("tags")
+    raw_language: str | None = None
+    title: str | None = None
+    if isinstance(tags, dict):
+        language_value = tags.get("language")
+        if isinstance(language_value, str) and language_value.strip():
+            raw_language = language_value.strip()
+        title_value = tags.get("title")
+        if isinstance(title_value, str) and title_value.strip():
+            title = title_value.strip()
 
-def _is_english_language(language: str | None) -> bool:
-    if language is None:
-        return False
-    normalized = language.replace("_", "-")
-    return normalized == "en" or normalized.startswith("en-") or normalized == "eng"
-
-
-def _is_default_audio_stream(stream: dict[str, object]) -> bool:
+    normalized_language = normalize_language_tag(raw_language)
     disposition = stream.get("disposition")
-    if not isinstance(disposition, dict):
-        return False
-    default_flag = disposition.get("default")
-    if isinstance(default_flag, int):
-        return default_flag == 1
-    if isinstance(default_flag, str) and default_flag.isdigit():
-        return int(default_flag) == 1
-    return False
+    is_default = False
+    if isinstance(disposition, dict):
+        default_flag = disposition.get("default")
+        if isinstance(default_flag, int):
+            is_default = default_flag == 1
+        elif isinstance(default_flag, str) and default_flag.isdigit():
+            is_default = int(default_flag) == 1
+
+    codec_name = stream.get("codec_name")
+    parsed_codec = codec_name if isinstance(codec_name, str) else None
+    channel_layout = stream.get("channel_layout")
+    parsed_layout = channel_layout if isinstance(channel_layout, str) else None
+
+    return AudioStreamInfo(
+        index=index,
+        codec_name=parsed_codec,
+        channels=_parse_int(stream.get("channels")),
+        channel_layout=parsed_layout,
+        language_raw=raw_language,
+        language_normalized=normalized_language,
+        title=title,
+        is_default=is_default,
+    )

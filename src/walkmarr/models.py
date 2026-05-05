@@ -35,6 +35,7 @@ class VideoProfile:
     max_width: int
     h264_profile: str
     h264_level: str
+    preferred_audio_languages: tuple[str, ...] = ("eng",)
 
 
 @dataclass(frozen=True)

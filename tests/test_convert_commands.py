@@ -1,7 +1,24 @@
 from pathlib import Path
 
-from walkmarr.convert.video import ProbeInfo, _select_preferred_audio_stream, build_ffmpeg_command
+import pytest
+
+from walkmarr.convert.audio_select import AudioStreamInfo
+from walkmarr.convert.video import ProbeInfo, build_ffmpeg_command
+from walkmarr.exceptions import ConversionError
 from walkmarr.models import VideoProfile
+
+
+def _audio_stream(index: int, language: str, channels: int, is_default: bool) -> AudioStreamInfo:
+    return AudioStreamInfo(
+        index=index,
+        codec_name="aac",
+        channels=channels,
+        channel_layout="stereo",
+        language_raw=language,
+        language_normalized=language,
+        title=None,
+        is_default=is_default,
+    )
 
 
 def test_ffmpeg_command_contains_required_flags() -> None:
@@ -16,7 +33,12 @@ def test_ffmpeg_command_contains_required_flags() -> None:
         h264_profile="baseline",
         h264_level="3.0",
     )
-    probe = ProbeInfo(source_video_bitrate_kbps=3175, width=1920, height=1080, audio_channels=2)
+    probe = ProbeInfo(
+        source_video_bitrate_kbps=3175,
+        width=1920,
+        height=1080,
+        audio_streams=[_audio_stream(index=1, language="eng", channels=2, is_default=True)],
+    )
     plan = build_ffmpeg_command(
         source_path=Path("/src/in.mkv"),
         tmp_output_path=Path("/out/out.tmp.mp4"),
@@ -34,6 +56,8 @@ def test_ffmpeg_command_contains_required_flags() -> None:
     assert "-maxrate" in cmd
     assert "-bufsize" in cmd
     assert "-movflags" in cmd and cmd[cmd.index("-movflags") + 1] == "+faststart"
+    assert "-sn" in cmd
+    assert "-dn" in cmd
 
 
 def test_ffmpeg_command_uses_selected_audio_stream_map() -> None:
@@ -52,9 +76,10 @@ def test_ffmpeg_command_uses_selected_audio_stream_map() -> None:
         source_video_bitrate_kbps=1000,
         width=1280,
         height=720,
-        audio_channels=6,
-        audio_map_selector="0:3",
-        audio_language="eng",
+        audio_streams=[
+            _audio_stream(index=1, language="por", channels=2, is_default=True),
+            _audio_stream(index=3, language="eng", channels=6, is_default=False),
+        ],
     )
     plan = build_ffmpeg_command(
         source_path=Path("/src/in.mkv"),
@@ -69,13 +94,29 @@ def test_ffmpeg_command_uses_selected_audio_stream_map() -> None:
     assert cmd[map_indices[1] + 1] == "0:3"
 
 
-def test_audio_selection_prefers_english_default_stream() -> None:
-    audio_streams = [
-        {"index": 1, "tags": {"language": "jpn"}, "disposition": {"default": 1}},
-        {"index": 2, "tags": {"language": "eng"}, "disposition": {"default": 0}},
-        {"index": 3, "tags": {"language": "eng"}, "disposition": {"default": 1}},
-    ]
+def test_build_ffmpeg_command_raises_when_no_audio_streams() -> None:
+    profile = VideoProfile(
+        crf=30,
+        maxrate_floor_kbps=250,
+        maxrate_cap_kbps=1200,
+        bitrate_multiplier=1.5,
+        audio_bitrate_mono_kbps=64,
+        audio_bitrate_stereo_kbps=96,
+        max_width=640,
+        h264_profile="baseline",
+        h264_level="3.0",
+    )
+    probe = ProbeInfo(
+        source_video_bitrate_kbps=1200,
+        width=1280,
+        height=720,
+        audio_streams=[],
+    )
 
-    selected = _select_preferred_audio_stream(audio_streams)
-    assert selected is not None
-    assert selected["index"] == 3
+    with pytest.raises(ConversionError, match="No audio streams"):
+        build_ffmpeg_command(
+            source_path=Path("/src/in.mkv"),
+            tmp_output_path=Path("/out/out.tmp.mp4"),
+            profile=profile,
+            probe=probe,
+        )

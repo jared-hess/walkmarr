@@ -51,6 +51,7 @@ def default_bootstrap_payload() -> dict[str, Any]:
                 "max_width": 640,
                 "h264_profile": "baseline",
                 "h264_level": "3.0",
+                "preferred_audio_languages": ["eng"],
             },
             "live_action": {
                 "crf": 28,
@@ -62,6 +63,7 @@ def default_bootstrap_payload() -> dict[str, Any]:
                 "max_width": 640,
                 "h264_profile": "baseline",
                 "h264_level": "3.0",
+                "preferred_audio_languages": ["eng"],
             },
             "movie": {
                 "crf": 27,
@@ -73,6 +75,7 @@ def default_bootstrap_payload() -> dict[str, Any]:
                 "max_width": 640,
                 "h264_profile": "baseline",
                 "h264_level": "3.0",
+                "preferred_audio_languages": ["eng"],
             },
         },
         "overrides": {"sonarr": {}, "radarr": {}},
@@ -137,6 +140,18 @@ def _is_subpath(child: Path, parent: Path) -> bool:
 
 def _build_video_profile(name: str, data: dict[str, Any]) -> VideoProfile:
     try:
+        preferred_languages_raw = data.get("preferred_audio_languages")
+        preferred_language_raw = data.get("preferred_audio_language")
+
+        preferred_languages: tuple[str, ...]
+        if isinstance(preferred_languages_raw, list) and preferred_languages_raw:
+            normalized = [str(item) for item in preferred_languages_raw if str(item).strip()]
+            preferred_languages = tuple(normalized) if normalized else ("eng",)
+        elif isinstance(preferred_language_raw, str) and preferred_language_raw.strip():
+            preferred_languages = (preferred_language_raw.strip(),)
+        else:
+            preferred_languages = ("eng",)
+
         return VideoProfile(
             crf=int(data["crf"]),
             maxrate_floor_kbps=int(data["maxrate_floor_kbps"]),
@@ -147,6 +162,7 @@ def _build_video_profile(name: str, data: dict[str, Any]) -> VideoProfile:
             max_width=int(data["max_width"]),
             h264_profile=str(data["h264_profile"]),
             h264_level=str(data["h264_level"]),
+            preferred_audio_languages=preferred_languages,
         )
     except KeyError as exc:
         raise ConfigError(f"Profile '{name}' is missing required key: {exc}") from exc

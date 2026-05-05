@@ -33,6 +33,7 @@ profiles:
     max_width: 640
     h264_profile: "baseline"
     h264_level: "3.0"
+    preferred_audio_languages: ["eng"]
 
   live_action:
     crf: 28
@@ -44,6 +45,7 @@ profiles:
     max_width: 640
     h264_profile: "baseline"
     h264_level: "3.0"
+    preferred_audio_languages: ["eng"]
 
   movie:
     crf: 27
@@ -55,6 +57,7 @@ profiles:
     max_width: 640
     h264_profile: "baseline"
     h264_level: "3.0"
+    preferred_audio_languages: ["eng"]
 
 overrides:
   sonarr:

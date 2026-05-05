@@ -201,6 +201,8 @@ def _print_conversion_plan(
     vbit_display = f"{source_vbit} kbps" if source_vbit is not None else "unknown"
     console.print(f"  Source vbit: {vbit_display}")
     console.print(f"  Maxrate: {plan.maxrate_kbps}k")
+    selected_language = plan.selected_audio_language or "unknown"
+    console.print(f"  Audio stream: {plan.selected_audio_index} ({selected_language})")
     console.print(f"  Audio: {plan.audio_channels}ch @ {plan.audio_bitrate_kbps}k")
     console.print(f"  Filter: {plan.filter_expr}")
     console.print(f"  Metadata: {metadata}")
