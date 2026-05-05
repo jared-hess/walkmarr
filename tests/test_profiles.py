@@ -28,7 +28,7 @@ def _config() -> AppConfig:
         },
         path_mappings=[PathMapping(remote="/tv", local=Path("/mnt/z/shows"))],
         output_roots={
-            "tv": Path("/mnt/d/ipod/shows"),
+            "shows": Path("/mnt/d/ipod/shows"),
             "movies": Path("/mnt/d/ipod/movies"),
         },
         default_profiles={"sonarr": "animation", "radarr": "movie"},

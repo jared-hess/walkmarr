@@ -15,7 +15,7 @@ path_mappings:
     local: "/mnt/media/movies"
 
 output_roots:
-  tv: "/mnt/walkmarr/shows"
+  shows: "/mnt/walkmarr/shows"
   movies: "/mnt/walkmarr/movies"
 
 default_profiles:

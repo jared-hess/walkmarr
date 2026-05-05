@@ -28,7 +28,7 @@ path_mappings:
   - remote: "/movies"
     local: "/mnt/z/movies"
 output_roots:
-  tv: "/mnt/d/ipod/shows"
+  shows: "/mnt/d/ipod/shows"
   movies: "/mnt/d/ipod/movies"
 default_profiles:
   sonarr: "animation"
@@ -88,7 +88,7 @@ path_mappings:
   - remote: "/tv"
     local: "/mnt/z/shows"
 output_roots:
-  tv: "/mnt/d/ipod/shows"
+  shows: "/mnt/d/ipod/shows"
   movies: "/mnt/d/ipod/movies"
 default_profiles:
   sonarr: "animation"
@@ -128,7 +128,7 @@ path_mappings:
   - remote: "/movies"
     local: "/mnt/z/movies"
 output_roots:
-  tv: "/mnt/d/ipod/shows"
+  shows: "/mnt/d/ipod/shows"
   movies: "/mnt/d/ipod/movies"
 default_profiles:
   sonarr: "animation"

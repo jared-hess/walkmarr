@@ -199,7 +199,7 @@ def sonarr_convert(
             episode_files=episode_files,
             profile_name=profile_name,
             path_mappings=app_config.path_mappings,
-            output_root=app_config.output_roots["tv"],
+            output_root=app_config.output_roots["shows"],
             allow_unmapped_existing_local=app_config.allow_unmapped_existing_local,
         )
         if not items:
@@ -327,7 +327,7 @@ def _prompt_bootstrap_payload(base_payload: dict[str, object]) -> dict[str, obje
     click.echo("Path mapping setup:")
     click.echo("- 'Provider path' is what Sonarr/Radarr report in their API.")
     click.echo("- 'Local path' is where Walkmarr can read that same media on this machine.")
-    click.echo("- Use one mapping per media type (TV + movies).")
+    click.echo("- Use one mapping per media type (shows + movies).")
 
     sonarr_url = click.prompt("Sonarr URL", default="http://localhost:8989", type=str)
     radarr_url = click.prompt("Radarr URL", default="http://localhost:7878", type=str)
@@ -357,11 +357,11 @@ def _prompt_bootstrap_payload(base_payload: dict[str, object]) -> dict[str, obje
             type=str,
         )
 
-    shows_remote = click.prompt("Provider TV root path", default="/tv", type=str)
-    shows_local = click.prompt("Local TV root path", default="/mnt/media/shows", type=str)
+    shows_remote = click.prompt("Provider shows root path", default="/tv", type=str)
+    shows_local = click.prompt("Local shows root path", default="/mnt/media/shows", type=str)
     movies_remote = click.prompt("Provider movies root path", default="/movies", type=str)
     movies_local = click.prompt("Local movies root path", default="/mnt/media/movies", type=str)
-    output_tv = click.prompt("Output TV root", default="/mnt/walkmarr/shows", type=str)
+    output_shows = click.prompt("Output shows root", default="/mnt/walkmarr/shows", type=str)
     output_movies = click.prompt("Output movies root", default="/mnt/walkmarr/movies", type=str)
 
     payload["providers"] = providers
@@ -369,7 +369,7 @@ def _prompt_bootstrap_payload(base_payload: dict[str, object]) -> dict[str, obje
         {"remote": shows_remote, "local": shows_local},
         {"remote": movies_remote, "local": movies_local},
     ]
-    payload["output_roots"] = {"tv": output_tv, "movies": output_movies}
+    payload["output_roots"] = {"shows": output_shows, "movies": output_movies}
     return payload
 
 

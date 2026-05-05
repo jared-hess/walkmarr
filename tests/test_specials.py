@@ -11,7 +11,7 @@ def test_specials_show_name_override_changes_tag_season_to_one() -> None:
             "radarr": ProviderConfig(url="http://radarr", api_key="y"),
         },
         path_mappings=[PathMapping(remote="/tv", local=Path("/mnt/z/shows"))],
-        output_roots={"tv": Path("/out/tv"), "movies": Path("/out/movies")},
+        output_roots={"shows": Path("/out/shows"), "movies": Path("/out/movies")},
         default_profiles={"sonarr": "animation", "radarr": "movie"},
         profiles={
             "animation": VideoProfile(30, 250, 1200, 1.5, 64, 96, 640, "baseline", "3.0"),
@@ -22,7 +22,7 @@ def test_specials_show_name_override_changes_tag_season_to_one() -> None:
     item = MediaItem(
         kind="episode",
         source_path=Path("/mnt/z/shows/The Simpsons/Season 0/ep.mkv"),
-        output_path=Path("/out/tv/The Simpsons/Season 0/out.mp4"),
+        output_path=Path("/out/shows/The Simpsons/Season 0/out.mp4"),
         profile_name="animation",
         title="Short 1",
         series_title="The Simpsons",

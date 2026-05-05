@@ -38,7 +38,7 @@ def default_bootstrap_payload() -> dict[str, Any]:
             {"remote": "/tv", "local": "/mnt/media/shows"},
             {"remote": "/movies", "local": "/mnt/media/movies"},
         ],
-        "output_roots": {"tv": "/mnt/walkmarr/shows", "movies": "/mnt/walkmarr/movies"},
+        "output_roots": {"shows": "/mnt/walkmarr/shows", "movies": "/mnt/walkmarr/movies"},
         "default_profiles": {"sonarr": "animation", "radarr": "movie"},
         "profiles": {
             "animation": {
@@ -218,13 +218,13 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
         path_mappings.append(PathMapping(remote=remote, local=Path(local)))
 
     output_roots_raw = _require_mapping(payload, "output_roots")
-    tv_root = output_roots_raw.get("tv")
+    shows_root = output_roots_raw.get("shows")
     movies_root = output_roots_raw.get("movies")
-    if not isinstance(tv_root, str) or not tv_root:
-        raise ConfigError("output_roots.tv must be a non-empty string")
+    if not isinstance(shows_root, str) or not shows_root:
+        raise ConfigError("output_roots.shows must be a non-empty string")
     if not isinstance(movies_root, str) or not movies_root:
         raise ConfigError("output_roots.movies must be a non-empty string")
-    output_roots = {"tv": Path(tv_root), "movies": Path(movies_root)}
+    output_roots = {"shows": Path(shows_root), "movies": Path(movies_root)}
 
     default_profiles = _require_mapping(payload, "default_profiles")
     for provider_name in ("sonarr", "radarr"):

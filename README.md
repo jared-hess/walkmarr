@@ -67,7 +67,7 @@ Prompt terminology:
 
 - `Provider ... root path`: the path Sonarr/Radarr return in API responses.
 - `Local ... root path`: where Walkmarr can access that same media on this machine.
-- You only need one mapping per media type (TV and movies).
+- You only need one mapping per media type (shows and movies).
 
 You can still export variables directly in your shell if preferred:
 
