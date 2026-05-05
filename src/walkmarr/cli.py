@@ -107,6 +107,11 @@ def config_init(
     del runtime
     resolved_target_path = target_path or default_bootstrap_config_path()
 
+    if resolved_target_path.exists() and not force:
+        raise _as_click_error(
+            ConfigError(f"Config already exists: {resolved_target_path}. Use --force to overwrite.")
+        )
+
     payload = default_bootstrap_payload()
     if interactive_prompt:
         payload = _prompt_bootstrap_payload(payload)
@@ -329,33 +334,48 @@ def _prompt_bootstrap_payload(base_payload: dict[str, object]) -> dict[str, obje
     click.echo("- 'Local path' is where Walkmarr can read that same media on this machine.")
     click.echo("- Use one mapping per media type (shows + movies).")
 
-    sonarr_url = click.prompt("Sonarr URL", default="http://localhost:8989", type=str)
-    radarr_url = click.prompt("Radarr URL", default="http://localhost:7878", type=str)
-    key_mode = click.prompt(
-        "API key storage mode",
-        type=click.Choice(["env", "inline"], case_sensitive=False),
-        default="env",
-        show_choices=True,
-    ).lower()
-
-    providers = {
-        "sonarr": {"url": sonarr_url},
-        "radarr": {"url": radarr_url},
+    providers: dict[str, dict[str, str]] = {}
+    provider_defaults = {
+        "sonarr": {
+            "url": "http://localhost:8989",
+            "api_key_env": "SONARR_API_KEY",
+            "name": "Sonarr",
+        },
+        "radarr": {
+            "url": "http://localhost:7878",
+            "api_key_env": "RADARR_API_KEY",
+            "name": "Radarr",
+        },
     }
-    if key_mode == "inline":
-        providers["sonarr"]["api_key"] = click.prompt("Sonarr API key", hide_input=True, type=str)
-        providers["radarr"]["api_key"] = click.prompt("Radarr API key", hide_input=True, type=str)
-    else:
-        providers["sonarr"]["api_key_env"] = click.prompt(
-            "Sonarr API key env var",
-            default="SONARR_API_KEY",
-            type=str,
-        )
-        providers["radarr"]["api_key_env"] = click.prompt(
-            "Radarr API key env var",
-            default="RADARR_API_KEY",
-            type=str,
-        )
+
+    for provider_key in ("sonarr", "radarr"):
+        defaults = provider_defaults[provider_key]
+        provider_name = defaults["name"]
+        click.echo("")
+        click.echo(f"{provider_name} settings:")
+        provider_url = click.prompt(f"{provider_name} URL", default=defaults["url"], type=str)
+        key_mode = click.prompt(
+            f"{provider_name} API key storage mode",
+            type=click.Choice(["env", "inline"], case_sensitive=False),
+            default="env",
+            show_choices=True,
+        ).lower()
+
+        provider_config: dict[str, str] = {"url": provider_url}
+        if key_mode == "inline":
+            provider_config["api_key"] = click.prompt(
+                f"{provider_name} API key",
+                hide_input=True,
+                type=str,
+            )
+        else:
+            provider_config["api_key_env"] = click.prompt(
+                f"{provider_name} API key env var",
+                default=defaults["api_key_env"],
+                type=str,
+            )
+
+        providers[provider_key] = provider_config
 
     shows_remote = click.prompt("Provider shows root path", default="/tv", type=str)
     shows_local = click.prompt("Local shows root path", default="/mnt/media/shows", type=str)
