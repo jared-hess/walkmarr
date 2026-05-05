@@ -25,6 +25,7 @@ def test_ffmpeg_command_contains_required_flags() -> None:
     )
 
     cmd = plan.command
+    assert "-xerror" in cmd
     assert "-profile:v" in cmd and cmd[cmd.index("-profile:v") + 1] == "baseline"
     assert "-level" in cmd and cmd[cmd.index("-level") + 1] == "3.0"
     assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"

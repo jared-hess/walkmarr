@@ -136,6 +136,7 @@ def build_ffmpeg_command(
     command = [
         ffmpeg_bin,
         "-y",
+        "-xerror",
         "-i",
         str(source_path),
         "-map",
