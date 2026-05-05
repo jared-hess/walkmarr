@@ -7,6 +7,7 @@ import errno
 import queue
 import shutil
 import shlex
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -523,6 +524,8 @@ def stage_source_file(
         console.print(f"  -> {staged_path}")
 
     max_attempts = 3
+    staged_ok = False
+    last_error: OSError | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             _copy_file_chunked(
@@ -533,8 +536,10 @@ def stage_source_file(
                 show_progress=show_progress,
             )
             shutil.copystat(source_path, staged_path)
+            staged_ok = True
             break
         except OSError as exc:
+            last_error = exc
             if staged_path.exists():
                 staged_path.unlink()
             is_retryable = exc.errno == errno.EIO
@@ -544,7 +549,23 @@ def stage_source_file(
                 )
                 time.sleep(float(attempt))
                 continue
-            raise
+
+    if not staged_ok:
+        if last_error is None:
+            raise OSError(errno.EIO, f"Failed staging source file: {source_path}")
+
+        if last_error.errno == errno.EIO:
+            console.print("Staging fallback: trying system cp...")
+            try:
+                _copy_file_with_cp(source_path, staged_path)
+                shutil.copystat(source_path, staged_path)
+                staged_ok = True
+            except OSError as exc:
+                if staged_path.exists():
+                    staged_path.unlink()
+                raise exc from last_error
+        else:
+            raise last_error
 
     if show_progress:
         console.print("Staging complete.")
@@ -590,6 +611,17 @@ def _copy_file_chunked(
                 break
             dst.write(chunk)
             progress.update(task, advance=len(chunk))
+
+
+def _copy_file_with_cp(source_path: Path, staged_path: Path) -> None:
+    cp_binary = shutil.which("cp")
+    if cp_binary is None:
+        raise OSError(errno.ENOENT, "'cp' binary not found for staging fallback")
+
+    try:
+        subprocess.run([cp_binary, str(source_path), str(staged_path)], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise OSError(errno.EIO, f"cp fallback failed with exit code {exc.returncode}") from exc
 
 
 def is_network_mount_path(path: Path) -> bool:
