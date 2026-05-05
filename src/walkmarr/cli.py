@@ -324,6 +324,11 @@ def _prompt_bootstrap_payload(base_payload: dict[str, object]) -> dict[str, obje
     """Collect interactive config bootstrap values from user prompts."""
     payload = dict(base_payload)
 
+    click.echo("Path mapping setup:")
+    click.echo("- 'Provider path' is what Sonarr/Radarr report in their API.")
+    click.echo("- 'Local path' is where Walkmarr can read that same media on this machine.")
+    click.echo("- Use one mapping per media type (TV + movies).")
+
     sonarr_url = click.prompt("Sonarr URL", default="http://localhost:8989", type=str)
     radarr_url = click.prompt("Radarr URL", default="http://localhost:7878", type=str)
     key_mode = click.prompt(
@@ -352,21 +357,17 @@ def _prompt_bootstrap_payload(base_payload: dict[str, object]) -> dict[str, obje
             type=str,
         )
 
-    shows_remote = click.prompt("Remote shows root", default="Z:/shows", type=str)
-    shows_local = click.prompt("Local shows root", default="/mnt/z/shows", type=str)
-    movies_remote = click.prompt("Remote movies root", default="Z:/movies", type=str)
-    movies_local = click.prompt("Local movies root", default="/mnt/z/movies", type=str)
-    tv_container_root = click.prompt("Container TV root", default="/tv", type=str)
-    movies_container_root = click.prompt("Container movies root", default="/movies", type=str)
-    output_tv = click.prompt("Output TV root", default="/mnt/d/ipod/shows", type=str)
-    output_movies = click.prompt("Output movies root", default="/mnt/d/ipod/movies", type=str)
+    shows_remote = click.prompt("Provider TV root path", default="/tv", type=str)
+    shows_local = click.prompt("Local TV root path", default="/mnt/media/shows", type=str)
+    movies_remote = click.prompt("Provider movies root path", default="/movies", type=str)
+    movies_local = click.prompt("Local movies root path", default="/mnt/media/movies", type=str)
+    output_tv = click.prompt("Output TV root", default="/mnt/walkmarr/shows", type=str)
+    output_movies = click.prompt("Output movies root", default="/mnt/walkmarr/movies", type=str)
 
     payload["providers"] = providers
     payload["path_mappings"] = [
         {"remote": shows_remote, "local": shows_local},
         {"remote": movies_remote, "local": movies_local},
-        {"remote": tv_container_root, "local": shows_local},
-        {"remote": movies_container_root, "local": movies_local},
     ]
     payload["output_roots"] = {"tv": output_tv, "movies": output_movies}
     return payload

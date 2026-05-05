@@ -63,6 +63,12 @@ You can bootstrap with prompts:
 uv run walkmarr config init --prompt
 ```
 
+Prompt terminology:
+
+- `Provider ... root path`: the path Sonarr/Radarr return in API responses.
+- `Local ... root path`: where Walkmarr can access that same media on this machine.
+- You only need one mapping per media type (TV and movies).
+
 You can still export variables directly in your shell if preferred:
 
 ```bash

@@ -35,12 +35,10 @@ def default_bootstrap_payload() -> dict[str, Any]:
             "radarr": {"url": "http://localhost:7878", "api_key_env": "RADARR_API_KEY"},
         },
         "path_mappings": [
-            {"remote": "Z:/shows", "local": "/mnt/z/shows"},
-            {"remote": "Z:/movies", "local": "/mnt/z/movies"},
-            {"remote": "/tv", "local": "/mnt/z/shows"},
-            {"remote": "/movies", "local": "/mnt/z/movies"},
+            {"remote": "/tv", "local": "/mnt/media/shows"},
+            {"remote": "/movies", "local": "/mnt/media/movies"},
         ],
-        "output_roots": {"tv": "/mnt/d/ipod/shows", "movies": "/mnt/d/ipod/movies"},
+        "output_roots": {"tv": "/mnt/walkmarr/shows", "movies": "/mnt/walkmarr/movies"},
         "default_profiles": {"sonarr": "animation", "radarr": "movie"},
         "profiles": {
             "animation": {
