@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from io import StringIO
 import threading
 from typing import Any
@@ -33,6 +34,40 @@ STATUS_ICON = {
     QueueItemStatus.FAILED: "✗",
     QueueItemStatus.CANCELED: "×",
 }
+
+
+@dataclass(frozen=True)
+class TableNavigator:
+    """Centralized DataTable cursor and viewport movement behavior."""
+
+    prefetch_margin: int = 3
+
+    def move(self, table: DataTable, delta: int) -> None:
+        if delta > 0:
+            table.action_cursor_down()
+        else:
+            table.action_cursor_up()
+
+    def ensure_cursor_visible(self, table: DataTable) -> None:
+        row = table.cursor_row
+        viewport_height = int(table.content_region.height)
+        if viewport_height <= 0:
+            return
+
+        header_rows = 1 if getattr(table, "show_header", False) else 0
+        visible_rows = max(1, viewport_height - header_rows)
+
+        top_row = int(table.scroll_y)
+        bottom_row = top_row + visible_rows - 1
+        prefetch_margin = min(self.prefetch_margin, max(0, visible_rows - 1))
+
+        if row < top_row:
+            table.scroll_to(y=row, animate=False, force=True, immediate=True)
+        elif row > bottom_row - prefetch_margin:
+            target_top = row - visible_rows + 1 + prefetch_margin
+            if target_top < 0:
+                target_top = 0
+            table.scroll_to(y=target_top, animate=False, force=True, immediate=True)
 
 
 class QueueChanged(Message):
@@ -151,6 +186,7 @@ class WalkmarrTUI(App[None]):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self._config = config
+        self._table_navigator = TableNavigator(prefetch_margin=3)
         self._sonarr = SonarrProvider(
             url=config.providers["sonarr"].url,
             api_key=resolve_api_key(config, "sonarr"),
@@ -202,8 +238,10 @@ class WalkmarrTUI(App[None]):
 
     def on_mount(self) -> None:
         media_table = self.query_one("#media-table", DataTable)
+        media_table.cursor_type = "row"
         media_table.add_columns("Title", "Year", "Provider ID")
         queue_table = self.query_one("#queue-table", DataTable)
+        queue_table.cursor_type = "row"
         queue_table.add_columns("S", "Title", "Progress", "Mode", "Profile")
         self.action_refresh_media()
         self._refresh_queue_table()
@@ -342,18 +380,27 @@ class WalkmarrTUI(App[None]):
             self._apply_search_filter(event.value)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id == "media-table":
-            index = int(event.row_key.value)
-            if 0 <= index < len(self._filtered_media_items):
-                selected = self._filtered_media_items[index]
+        self._handle_table_row_change(event.data_table, event.cursor_row)
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._handle_table_row_change(event.data_table, event.cursor_row)
+
+    def _handle_table_row_change(self, table: DataTable, cursor_row: int) -> None:
+        if table.id == "media-table":
+            if 0 <= cursor_row < len(self._filtered_media_items):
+                selected = self._filtered_media_items[cursor_row]
                 selected_id = selected.get("id")
                 if isinstance(selected_id, int):
                     self._selected_media_id = selected_id
                 self._update_details_for_media(selected)
-        elif event.data_table.id == "queue-table":
-            queue_id = str(event.row_key.value)
-            self._selected_queue_id = queue_id
-            self._update_details_for_queue(queue_id)
+        elif table.id == "queue-table":
+            items = self._queue.get_items()
+            if 0 <= cursor_row < len(items):
+                queue_id = items[cursor_row].id
+                self._selected_queue_id = queue_id
+                self._update_details_for_queue(queue_id)
+
+        self._table_navigator.ensure_cursor_visible(table)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         mapping = {
@@ -538,44 +585,12 @@ class WalkmarrTUI(App[None]):
     def _move_cursor(self, delta: int) -> None:
         if self.focus_zone == "media":
             table = self.query_one("#media-table", DataTable)
-            count = len(self._filtered_media_items)
-            if count == 0:
-                return
-            if delta > 0:
-                table.action_cursor_down()
-            else:
-                table.action_cursor_up()
-            current = table.cursor_row
-            next_index = max(0, min(count - 1, current))
-            selected = self._filtered_media_items[next_index]
-            selected_id = selected.get("id")
-            if isinstance(selected_id, int):
-                self._selected_media_id = selected_id
-            self._update_details_for_media(selected)
+            self._table_navigator.move(table, delta)
             return
 
         if self.focus_zone == "queue":
             table = self.query_one("#queue-table", DataTable)
-            items = self._queue.get_items()
-            if not items:
-                return
-            if delta > 0:
-                table.action_cursor_down()
-            else:
-                table.action_cursor_up()
-            current = table.cursor_row
-            next_index = max(0, min(len(items) - 1, current))
-            queue_item = items[next_index]
-            self._selected_queue_id = queue_item.id
-            self._update_details_for_queue(queue_item.id)
-
-    def _index_for_selected_media(self) -> int:
-        if self._selected_media_id is None:
-            return 0
-        for index, item in enumerate(self._filtered_media_items):
-            if item.get("id") == self._selected_media_id:
-                return index
-        return 0
+            self._table_navigator.move(table, delta)
 
     def _log_message(self, message: str) -> None:
         self.query_one("#log", RichLog).write(message)
