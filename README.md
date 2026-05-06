@@ -12,9 +12,9 @@ mirror libraries, starting with iPod Classic-compatible video exports.
 - Tags MP4/M4V outputs with AtomicParsley for iTunes/iPod metadata.
 - Never modifies source media files.
 
-## What Walkmarr does not do (v1)
+## What Walkmarr does not do
 
-- No TUI, web app, or daemon.
+- No web app or daemon.
 - No automatic *arr hook scripts.
 - No Lidarr/music pipeline.
 - No artwork download/embed pipeline (beyond future optional extension).
@@ -63,6 +63,17 @@ Staging defaults to `auto`: Walkmarr detects network-like source mounts and
 copies source media to local temp storage before probing/conversion. You can
 set `staging.mode` to `always` or `never` in config.
 
+For one-off runs, you can override this with `--staging-mode auto|always|never`
+on `sonarr convert` and `radarr convert`.
+
+Queue defaults:
+
+- `queue.workers: 1` (v2 supports one active worker)
+- `queue.continue_on_error: true`
+- `queue.start_paused: false`
+- `queue.default_mode: missing_only`
+- `queue.remember_completed_until_exit: true`
+
 You can bootstrap with prompts:
 
 ```bash
@@ -104,6 +115,28 @@ uv run walkmarr radarr list
 uv run walkmarr radarr convert "American Psycho" --dry-run
 uv run walkmarr radarr convert "American Psycho"
 ```
+
+Launch the TUI queue workflow:
+
+```bash
+uv run walkmarr tui
+```
+
+TUI key highlights:
+
+- `tab` cycle focus: media -> details -> queue -> log -> search
+- `j` / `k` move selection down/up in focused media or queue pane
+- `a` add selected media as missing-only queue job
+- `A` add selected media as overwrite queue job (confirmation modal)
+- `d` add selected media as dry-run queue job
+- `space` pause/resume queue
+- `x` cancel current queue item
+- `delete` remove selected pending queue item
+- `u` move selected queue item up
+- `J` / `K` move selected queue item down/up
+- `C` clear completed queue items
+- `X` clear pending queue items (confirmation modal)
+- `p` toggle provider Sonarr/Radarr
 
 ## Dry-run behavior
 

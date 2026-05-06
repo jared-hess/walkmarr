@@ -12,6 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Literal, cast
 
 from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
@@ -48,6 +49,45 @@ class BatchProcessResult:
 
     converted: int
     skipped: int
+    failed: int = 0
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """Structured progress message for queue-aware UIs."""
+
+    level: Literal["debug", "info", "warning", "error", "success"]
+    message: str
+    queue_item_id: str | None = None
+    provider: Literal["sonarr", "radarr"] | None = None
+    current_index: int | None = None
+    total: int | None = None
+    current_stage: Literal[
+        "queued",
+        "expanding",
+        "probing",
+        "converting",
+        "tagging",
+        "skipping",
+        "complete",
+        "failed",
+        "canceled",
+    ] | None = None
+    item: MediaItem | None = None
+
+
+class CancellationToken:
+    """Thread-safe cancellation token for long-running conversions."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def is_canceled(self) -> bool:
+        return self._event.is_set()
 
 
 @dataclass(frozen=True)
@@ -79,6 +119,11 @@ def process_media_item(
     console: Console,
     dry_run: bool,
     overwrite: bool,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
+    cancellation_token: CancellationToken | None = None,
+    queue_item_id: str | None = None,
+    item_index: int | None = None,
+    item_total: int | None = None,
 ) -> ProcessResult:
     """Process one media item through inspect, convert, tag, and finalize."""
     if not media_item.source_path.exists():
@@ -101,6 +146,11 @@ def process_media_item(
             console=console,
             dry_run=dry_run,
             overwrite=overwrite,
+            progress_callback=progress_callback,
+            cancellation_token=cancellation_token,
+            queue_item_id=queue_item_id,
+            item_index=item_index,
+            item_total=item_total,
         )
     finally:
         _cleanup_staged_file(prepared)
@@ -116,39 +166,84 @@ def process_media_items(
     console: Console,
     dry_run: bool,
     overwrite: bool,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
+    cancellation_token: CancellationToken | None = None,
+    queue_item_id: str | None = None,
+    continue_on_error: bool = False,
 ) -> BatchProcessResult:
     """Process a list of media items with stage/convert overlap."""
     if dry_run or len(media_items) <= 1:
         converted = 0
         skipped = 0
-        for item in media_items:
-            result = process_media_item(
-                config=config,
-                media_item=item,
-                provider_name=provider_name,
-                profile=profile,
-                atomicparsley_bin=atomicparsley_bin,
-                console=console,
-                dry_run=dry_run,
-                overwrite=overwrite,
-            )
+        failed = 0
+        total = len(media_items)
+        for idx, item in enumerate(media_items, start=1):
+            if cancellation_token is not None and cancellation_token.is_canceled:
+                _emit_progress(
+                    progress_callback,
+                    level="warning",
+                    message="Canceled before next file",
+                    queue_item_id=queue_item_id,
+                    provider=provider_name,
+                    current_index=idx,
+                    total=total,
+                    current_stage="canceled",
+                    item=item,
+                )
+                raise WalkmarrError("Conversion canceled")
+            try:
+                result = process_media_item(
+                    config=config,
+                    media_item=item,
+                    provider_name=provider_name,
+                    profile=profile,
+                    atomicparsley_bin=atomicparsley_bin,
+                    console=console,
+                    dry_run=dry_run,
+                    overwrite=overwrite,
+                    progress_callback=progress_callback,
+                    cancellation_token=cancellation_token,
+                    queue_item_id=queue_item_id,
+                    item_index=idx,
+                    item_total=total,
+                )
+            except Exception as exc:
+                failed += 1
+                _emit_progress(
+                    progress_callback,
+                    level="error",
+                    message=str(exc),
+                    queue_item_id=queue_item_id,
+                    provider=provider_name,
+                    current_index=idx,
+                    total=total,
+                    current_stage="failed",
+                    item=item,
+                )
+                if continue_on_error:
+                    continue
+                raise
+
             if result.status in {"converted", "dry-run"}:
                 converted += 1
             else:
                 skipped += 1
-        return BatchProcessResult(converted=converted, skipped=skipped)
+        return BatchProcessResult(converted=converted, skipped=skipped, failed=failed)
 
     work_queue: queue.Queue[PreparedMediaItem | object] = queue.Queue(maxsize=1)
     sentinel = object()
     stop_event = threading.Event()
     result_lock = threading.Lock()
-    counts = {"converted": 0, "skipped": 0}
+    counts = {"converted": 0, "skipped": 0, "failed": 0}
     first_error: list[Exception] = []
 
     def stage_worker() -> None:
         try:
             for item in media_items:
                 if stop_event.is_set():
+                    break
+                if cancellation_token is not None and cancellation_token.is_canceled:
+                    stop_event.set()
                     break
                 prepared = _prepare_media_item(
                     config=config,
@@ -181,6 +276,15 @@ def process_media_items(
                 if prepared.skip_only:
                     with result_lock:
                         counts["skipped"] += 1
+                    _emit_progress(
+                        progress_callback,
+                        level="info",
+                        message=f"Skipping existing output for {prepared.media_item.title}",
+                        queue_item_id=queue_item_id,
+                        provider=provider_name,
+                        current_stage="skipping",
+                        item=prepared.media_item,
+                    )
                     continue
 
                 if stop_event.is_set():
@@ -195,6 +299,9 @@ def process_media_items(
                     console=console,
                     dry_run=False,
                     overwrite=overwrite,
+                    progress_callback=progress_callback,
+                    cancellation_token=cancellation_token,
+                    queue_item_id=queue_item_id,
                 )
                 with result_lock:
                     if result.status == "converted":
@@ -202,9 +309,21 @@ def process_media_items(
                     else:
                         counts["skipped"] += 1
             except Exception as exc:  # pragma: no cover - covered via integration flow
-                if not first_error:
-                    first_error.append(exc)
-                stop_event.set()
+                with result_lock:
+                    counts["failed"] += 1
+                _emit_progress(
+                    progress_callback,
+                    level="error",
+                    message=str(exc),
+                    queue_item_id=queue_item_id,
+                    provider=provider_name,
+                    current_stage="failed",
+                    item=prepared.media_item,
+                )
+                if not continue_on_error:
+                    if not first_error:
+                        first_error.append(exc)
+                    stop_event.set()
             finally:
                 _cleanup_staged_file(prepared)
 
@@ -226,7 +345,11 @@ def process_media_items(
             raise exc
         raise WalkmarrError(str(exc)) from exc
 
-    return BatchProcessResult(converted=counts["converted"], skipped=counts["skipped"])
+    return BatchProcessResult(
+        converted=counts["converted"],
+        skipped=counts["skipped"],
+        failed=counts["failed"],
+    )
 
 
 def _prepare_media_item(
@@ -300,16 +423,55 @@ def _process_prepared_media_item(
     console: Console,
     dry_run: bool,
     overwrite: bool,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
+    cancellation_token: CancellationToken | None = None,
+    queue_item_id: str | None = None,
+    item_index: int | None = None,
+    item_total: int | None = None,
 ) -> ProcessResult:
     media_item = prepared.media_item
     final_output = media_item.output_path
 
     if prepared.skip_only:
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Skipping existing output for {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="skipping",
+            item=media_item,
+        )
         return ProcessResult(status="skipped", output_path=final_output)
 
     if final_output.exists() and not overwrite:
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Skipping existing output for {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="skipping",
+            item=media_item,
+        )
         return ProcessResult(status="skipped", output_path=final_output)
 
+    _ensure_not_canceled(cancellation_token)
+    _emit_progress(
+        progress_callback,
+        level="info",
+        message=f"Probing {media_item.title}",
+        queue_item_id=queue_item_id,
+        provider=provider_name,
+        current_index=item_index,
+        total=item_total,
+        current_stage="probing",
+        item=media_item,
+    )
     probe = probe_media(prepared.probe_source_path)
     tmp_output = final_output.with_name(f"{final_output.stem}.tmp.mp4")
     ffmpeg_plan = build_ffmpeg_command(
@@ -337,6 +499,17 @@ def _process_prepared_media_item(
     )
 
     if dry_run:
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Dry run complete for {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="complete",
+            item=media_item,
+        )
         return ProcessResult(status="dry-run", output_path=final_output)
 
     final_output.parent.mkdir(parents=True, exist_ok=True)
@@ -344,12 +517,60 @@ def _process_prepared_media_item(
         tmp_output.unlink()
 
     try:
-        run_ffmpeg(ffmpeg_plan.command)
-        run_atomicparsley(tag_command)
+        _ensure_not_canceled(cancellation_token)
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Converting {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="converting",
+            item=media_item,
+        )
+        _run_ffmpeg_with_cancellation(ffmpeg_plan.command, cancellation_token)
+        _ensure_not_canceled(cancellation_token)
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Tagging {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="tagging",
+            item=media_item,
+        )
+        _run_atomicparsley_with_cancellation(tag_command, cancellation_token)
         tmp_output.replace(final_output)
+        _emit_progress(
+            progress_callback,
+            level="success",
+            message=f"Completed {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="complete",
+            item=media_item,
+        )
     except (ConversionError, TaggingError, OSError) as exc:
         if tmp_output.exists():
             tmp_output.unlink()
+        stage = "canceled" if _is_cancellation_error(exc) else "failed"
+        level = "warning" if stage == "canceled" else "error"
+        _emit_progress(
+            progress_callback,
+            level=level,
+            message=f"Failed processing {media_item.title}: {exc}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage=stage,
+            item=media_item,
+        )
         raise WalkmarrError(f"Failed processing '{media_item.source_path}': {exc}") from exc
 
     return ProcessResult(status="converted", output_path=final_output)
@@ -359,6 +580,105 @@ def _cleanup_staged_file(prepared: PreparedMediaItem) -> None:
     path = prepared.staged_file_path
     if path is not None and path.exists():
         path.unlink()
+
+
+def _emit_progress(
+    callback: Callable[[ProgressEvent], None] | None,
+    *,
+    level: Literal["debug", "info", "warning", "error", "success"],
+    message: str,
+    queue_item_id: str | None,
+    provider: str,
+    current_stage: Literal[
+        "queued",
+        "expanding",
+        "probing",
+        "converting",
+        "tagging",
+        "skipping",
+        "complete",
+        "failed",
+        "canceled",
+    ] | None,
+    item: MediaItem | None,
+    current_index: int | None = None,
+    total: int | None = None,
+) -> None:
+    if callback is None:
+        return
+    provider_value: Literal["sonarr", "radarr"] | None = None
+    if provider in {"sonarr", "radarr"}:
+        provider_value = cast(Literal["sonarr", "radarr"], provider)
+    callback(
+        ProgressEvent(
+            level=level,
+            message=message,
+            queue_item_id=queue_item_id,
+            provider=provider_value,
+            current_index=current_index,
+            total=total,
+            current_stage=current_stage,
+            item=item,
+        )
+    )
+
+
+def _ensure_not_canceled(cancellation_token: CancellationToken | None) -> None:
+    if cancellation_token is not None and cancellation_token.is_canceled:
+        raise ConversionError("Conversion canceled")
+
+
+def _is_cancellation_error(exc: Exception) -> bool:
+    return "canceled" in str(exc).casefold()
+
+
+def _run_ffmpeg_with_cancellation(
+    command: list[str],
+    cancellation_token: CancellationToken | None,
+) -> None:
+    if cancellation_token is None:
+        run_ffmpeg(command)
+        return
+    _run_subprocess_cancellable(command, "ffmpeg", cancellation_token)
+
+
+def _run_atomicparsley_with_cancellation(
+    command: list[str],
+    cancellation_token: CancellationToken | None,
+) -> None:
+    if cancellation_token is None:
+        run_atomicparsley(command)
+        return
+    _run_subprocess_cancellable(command, command[0], cancellation_token)
+
+
+def _run_subprocess_cancellable(
+    command: list[str],
+    label: str,
+    cancellation_token: CancellationToken,
+) -> None:
+    try:
+        process = subprocess.Popen(command)
+    except FileNotFoundError as exc:
+        raise ConversionError(f"{label} binary not found: {command[0]}") from exc
+
+    while True:
+        if cancellation_token.is_canceled:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise ConversionError("Conversion canceled")
+        return_code = process.poll()
+        if return_code is not None:
+            if return_code != 0:
+                if label.casefold().startswith("ffmpeg"):
+                    raise ConversionError(f"ffmpeg conversion failed with exit code {return_code}")
+                raise TaggingError(f"AtomicParsley failed with exit code {return_code}")
+            return
+        time.sleep(0.1)
 
 
 def _queue_put_with_stop(

@@ -164,3 +164,107 @@ profiles:
     _, config = load_config(cfg_path)
     assert resolve_api_key(config, "sonarr") == "from_dotenv"
     assert resolve_api_key(config, "radarr") == "from_dotenv2"
+
+
+def test_load_config_queue_defaults(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        """
+providers:
+  sonarr:
+    url: "http://localhost:8989"
+    api_key: "x"
+  radarr:
+    url: "http://localhost:7878"
+    api_key: "y"
+path_mappings:
+  - remote: "/tv"
+    local: "/mnt/z/shows"
+  - remote: "/movies"
+    local: "/mnt/z/movies"
+output_roots:
+  shows: "/mnt/d/ipod/shows"
+  movies: "/mnt/d/ipod/movies"
+default_profiles:
+  sonarr: "animation"
+  radarr: "movie"
+profiles:
+  animation:
+    crf: 30
+    maxrate_floor_kbps: 250
+    maxrate_cap_kbps: 1200
+    bitrate_multiplier: 1.5
+    audio_bitrate_mono_kbps: 64
+    audio_bitrate_stereo_kbps: 96
+    max_width: 640
+    h264_profile: "baseline"
+    h264_level: "3.0"
+  movie:
+    crf: 27
+    maxrate_floor_kbps: 400
+    maxrate_cap_kbps: 1500
+    bitrate_multiplier: 1.5
+    audio_bitrate_mono_kbps: 64
+    audio_bitrate_stereo_kbps: 96
+    max_width: 640
+    h264_profile: "baseline"
+    h264_level: "3.0"
+""",
+    )
+    _, config = load_config(cfg_path)
+    assert config.queue_workers == 1
+    assert config.queue_continue_on_error is True
+    assert config.queue_start_paused is False
+    assert config.queue_default_mode == "missing_only"
+
+
+def test_load_config_rejects_queue_workers_not_one(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        """
+providers:
+  sonarr:
+    url: "http://localhost:8989"
+    api_key: "x"
+  radarr:
+    url: "http://localhost:7878"
+    api_key: "y"
+path_mappings:
+  - remote: "/tv"
+    local: "/mnt/z/shows"
+  - remote: "/movies"
+    local: "/mnt/z/movies"
+output_roots:
+  shows: "/mnt/d/ipod/shows"
+  movies: "/mnt/d/ipod/movies"
+default_profiles:
+  sonarr: "animation"
+  radarr: "movie"
+profiles:
+  animation:
+    crf: 30
+    maxrate_floor_kbps: 250
+    maxrate_cap_kbps: 1200
+    bitrate_multiplier: 1.5
+    audio_bitrate_mono_kbps: 64
+    audio_bitrate_stereo_kbps: 96
+    max_width: 640
+    h264_profile: "baseline"
+    h264_level: "3.0"
+  movie:
+    crf: 27
+    maxrate_floor_kbps: 400
+    maxrate_cap_kbps: 1500
+    bitrate_multiplier: 1.5
+    audio_bitrate_mono_kbps: 64
+    audio_bitrate_stereo_kbps: 96
+    max_width: 640
+    h264_profile: "baseline"
+    h264_level: "3.0"
+queue:
+  workers: 2
+""",
+    )
+
+    with pytest.raises(ConfigError, match="queue.workers must be 1"):
+        load_config(cfg_path)

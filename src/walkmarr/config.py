@@ -40,6 +40,13 @@ def default_bootstrap_payload() -> dict[str, Any]:
         ],
         "output_roots": {"shows": "/mnt/walkmarr/shows", "movies": "/mnt/walkmarr/movies"},
         "staging": {"mode": "auto", "directory": "/tmp/walkmarr-staging"},
+        "queue": {
+            "workers": 1,
+            "continue_on_error": True,
+            "start_paused": False,
+            "default_mode": "missing_only",
+            "remember_completed_until_exit": True,
+        },
         "default_profiles": {"sonarr": "animation", "radarr": "movie"},
         "profiles": {
             "animation": {
@@ -275,6 +282,24 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
     if not isinstance(staging_directory_raw, str) or not staging_directory_raw.strip():
         raise ConfigError("staging.directory must be a non-empty string")
 
+    queue_raw = payload.get("queue", {})
+    if not isinstance(queue_raw, dict):
+        raise ConfigError("queue must be a mapping")
+    queue_workers = int(queue_raw.get("workers", 1))
+    if queue_workers != 1:
+        raise ConfigError("queue.workers must be 1 in v2")
+    queue_continue_on_error = bool(queue_raw.get("continue_on_error", True))
+    queue_start_paused = bool(queue_raw.get("start_paused", False))
+    queue_default_mode_raw = queue_raw.get("default_mode", "missing_only")
+    if not isinstance(queue_default_mode_raw, str):
+        raise ConfigError("queue.default_mode must be a string")
+    queue_default_mode = queue_default_mode_raw.casefold()
+    if queue_default_mode not in {"missing_only", "overwrite"}:
+        raise ConfigError("queue.default_mode must be one of: missing_only, overwrite")
+    queue_remember_completed_until_exit = bool(
+        queue_raw.get("remember_completed_until_exit", True)
+    )
+
     app_config = AppConfig(
         providers=providers,
         path_mappings=path_mappings,
@@ -285,6 +310,11 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
         staging_mode=validated_staging_mode,
         staging_directory=Path(staging_directory_raw),
         allow_unmapped_existing_local=bool(payload.get("allow_unmapped_existing_local", False)),
+        queue_workers=queue_workers,
+        queue_continue_on_error=queue_continue_on_error,
+        queue_start_paused=queue_start_paused,
+        queue_default_mode=cast(Literal["missing_only", "overwrite"], queue_default_mode),
+        queue_remember_completed_until_exit=queue_remember_completed_until_exit,
     )
 
     _validate_profiles_exist(app_config)

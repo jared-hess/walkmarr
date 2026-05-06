@@ -22,6 +22,13 @@ staging:
   mode: "auto"
   directory: "/tmp/walkmarr-staging"
 
+queue:
+  workers: 1
+  continue_on_error: true
+  start_paused: false
+  default_mode: "missing_only"
+  remember_completed_until_exit: true
+
 default_profiles:
   sonarr: "animation"
   radarr: "movie"

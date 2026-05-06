@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal, cast
 
 import click
 from rich.console import Console
@@ -21,6 +22,9 @@ from walkmarr.models import AppConfig
 from walkmarr.process import ensure_required_tools, process_media_items
 from walkmarr.providers.radarr import RadarrProvider
 from walkmarr.providers.sonarr import SonarrProvider
+
+
+STAGING_MODE_CHOICES = ("auto", "always", "never")
 
 
 @dataclass
@@ -44,6 +48,14 @@ def _get_config(ctx: RuntimeContext) -> AppConfig:
 
 def _as_click_error(exc: Exception) -> click.ClickException:
     return click.ClickException(str(exc))
+
+
+def _apply_staging_mode_override(config: AppConfig, staging_mode: str | None) -> AppConfig:
+    """Return config with optional per-command staging mode override."""
+    if staging_mode is None:
+        return config
+    normalized = cast(Literal["auto", "always", "never"], staging_mode.casefold())
+    return replace(config, staging_mode=normalized)
 
 
 @click.group()
@@ -153,9 +165,28 @@ def sonarr_list(runtime: RuntimeContext) -> None:
         runtime.console.print(str(item.get("title", "")))
 
 
+@main.command("tui")
+@click.pass_obj
+def tui(runtime: RuntimeContext) -> None:
+    """Launch interactive queue-oriented TUI."""
+    try:
+        from walkmarr.tui import run_tui
+
+        app_config = _get_config(runtime)
+        run_tui(app_config)
+    except (WalkmarrError, ConfigError, ProviderError) as exc:
+        raise _as_click_error(exc) from exc
+
+
 @sonarr.command("convert")
 @click.argument("series_title")
 @click.option("--dry-run", is_flag=True, help="Print plan without writing output files.")
+@click.option(
+    "--staging-mode",
+    type=click.Choice(STAGING_MODE_CHOICES, case_sensitive=False),
+    default=None,
+    help="Override source staging behavior for this run: auto, always, or never.",
+)
 @click.option(
     "--missing-only",
     is_flag=True,
@@ -169,6 +200,7 @@ def sonarr_convert(
     runtime: RuntimeContext,
     series_title: str,
     dry_run: bool,
+    staging_mode: str | None,
     missing_only: bool,
     overwrite: bool,
 ) -> None:
@@ -176,6 +208,7 @@ def sonarr_convert(
     del missing_only
     try:
         app_config = _get_config(runtime)
+        effective_config = _apply_staging_mode_override(app_config, staging_mode)
         atomicparsley_bin = ensure_required_tools()
 
         provider = SonarrProvider(
@@ -210,7 +243,7 @@ def sonarr_convert(
             raise ProviderError(f"No episode files found for Sonarr series '{selected_title}'")
 
         result = process_media_items(
-            config=app_config,
+            config=effective_config,
             media_items=items,
             provider_name="sonarr",
             profile=profile,
@@ -255,6 +288,12 @@ def radarr_list(runtime: RuntimeContext) -> None:
 @click.argument("movie_title")
 @click.option("--dry-run", is_flag=True, help="Print plan without writing output files.")
 @click.option(
+    "--staging-mode",
+    type=click.Choice(STAGING_MODE_CHOICES, case_sensitive=False),
+    default=None,
+    help="Override source staging behavior for this run: auto, always, or never.",
+)
+@click.option(
     "--missing-only",
     is_flag=True,
     default=True,
@@ -267,6 +306,7 @@ def radarr_convert(
     runtime: RuntimeContext,
     movie_title: str,
     dry_run: bool,
+    staging_mode: str | None,
     missing_only: bool,
     overwrite: bool,
 ) -> None:
@@ -274,6 +314,7 @@ def radarr_convert(
     del missing_only
     try:
         app_config = _get_config(runtime)
+        effective_config = _apply_staging_mode_override(app_config, staging_mode)
         atomicparsley_bin = ensure_required_tools()
 
         provider = RadarrProvider(
@@ -299,7 +340,7 @@ def radarr_convert(
         )
 
         result = process_media_items(
-            config=app_config,
+            config=effective_config,
             media_items=[media_item],
             provider_name="radarr",
             profile=profile,
