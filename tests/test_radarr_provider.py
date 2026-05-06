@@ -56,6 +56,23 @@ def test_list_movies() -> None:
     assert [m["title"] for m in movies] == ["American Psycho", "Heat"]
 
 
+def test_get_movie_by_id() -> None:
+    session = FakeSession(
+        {
+            ("http://localhost:7878/api/v3/movie/28", ()): {
+                "id": 28,
+                "title": "Alien",
+                "year": 1979,
+                "movieFile": {"path": "Z:/movies/Alien (1979)/Alien.mkv"},
+            }
+        }
+    )
+    provider = _provider(session)
+    movie = provider.get_movie_by_id(28)
+    assert movie["id"] == 28
+    assert movie["title"] == "Alien"
+
+
 def test_exact_title_match() -> None:
     provider = _provider(FakeSession({}))
     matched = provider.match_movie(

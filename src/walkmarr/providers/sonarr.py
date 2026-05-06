@@ -35,6 +35,13 @@ class SonarrProvider:
             raise ProviderError("Sonarr returned unexpected series payload")
         return [item for item in payload if isinstance(item, dict)]
 
+    def get_series_by_id(self, series_id: int) -> dict[str, Any]:
+        """Fetch one Sonarr series by ID."""
+        payload = self._get_json(f"/api/v3/series/{series_id}")
+        if not isinstance(payload, dict):
+            raise ProviderError(f"Sonarr returned unexpected series payload for id {series_id}")
+        return payload
+
     def match_series(self, title: str, series_list: list[dict[str, Any]]) -> dict[str, Any]:
         """Match a series by exact title first, then case-insensitive title."""
         exact = [s for s in series_list if s.get("title") == title]

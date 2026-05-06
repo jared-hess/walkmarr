@@ -35,6 +35,13 @@ class RadarrProvider:
             raise ProviderError("Radarr returned unexpected movie payload")
         return [item for item in payload if isinstance(item, dict)]
 
+    def get_movie_by_id(self, movie_id: int) -> dict[str, Any]:
+        """Fetch one Radarr movie by ID."""
+        payload = self._get_json(f"/api/v3/movie/{movie_id}")
+        if not isinstance(payload, dict):
+            raise ProviderError(f"Radarr returned unexpected movie payload for id {movie_id}")
+        return payload
+
     def match_movie(self, title: str, movies: list[dict[str, Any]]) -> dict[str, Any]:
         """Match movie by exact title first, then case-insensitive title."""
         exact = [m for m in movies if m.get("title") == title]

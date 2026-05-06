@@ -56,6 +56,18 @@ def test_list_series() -> None:
     assert [s["title"] for s in series] == ["Futurama", "The Simpsons"]
 
 
+def test_get_series_by_id() -> None:
+    session = FakeSession(
+        {
+            ("http://localhost:8989/api/v3/series/1", ()): {"id": 1, "title": "Futurama"}
+        }
+    )
+    provider = _provider(session)
+    series = provider.get_series_by_id(1)
+    assert series["id"] == 1
+    assert series["title"] == "Futurama"
+
+
 def test_exact_title_match() -> None:
     provider = _provider(FakeSession({}))
     matched = provider.match_series(

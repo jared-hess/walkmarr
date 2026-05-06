@@ -45,15 +45,26 @@ def _config(tmp_path: Path) -> AppConfig:
 
 
 class FakeSonarrProvider:
+    def __init__(self) -> None:
+        self.get_series_by_id_calls = 0
+        self.list_episodes_calls = 0
+        self.list_episode_files_calls = 0
+
     def list_series(self) -> list[dict[str, object]]:
         return [{"id": 1, "title": "Futurama"}]
 
+    def get_series_by_id(self, series_id: int) -> dict[str, object]:
+        self.get_series_by_id_calls += 1
+        return {"id": series_id, "title": "Futurama"}
+
     def list_episodes(self, series_id: int) -> list[dict[str, object]]:
         del series_id
+        self.list_episodes_calls += 1
         return []
 
     def list_episode_files(self, series_id: int) -> list[dict[str, object]]:
         del series_id
+        self.list_episode_files_calls += 1
         return []
 
     def build_media_items(self, **kwargs: object) -> list[MediaItem]:
@@ -74,8 +85,20 @@ class FakeSonarrProvider:
 
 
 class FakeRadarrProvider:
+    def __init__(self) -> None:
+        self.get_movie_by_id_calls = 0
+
     def list_movies(self) -> list[dict[str, object]]:
         return [{"id": 2, "title": "American Psycho", "year": 2000, "movieFile": {"path": "/x.mkv"}}]
+
+    def get_movie_by_id(self, movie_id: int) -> dict[str, object]:
+        self.get_movie_by_id_calls += 1
+        return {
+            "id": movie_id,
+            "title": "American Psycho",
+            "year": 2000,
+            "movieFile": {"path": "/x.mkv"},
+        }
 
     def build_media_item(self, **kwargs: object) -> MediaItem:
         output_root = kwargs["output_root"]
@@ -232,4 +255,31 @@ def test_queue_manager_stop_returns_cleanly(
         radarr_provider=FakeRadarrProvider(),
         console=Console(file=StringIO(), force_terminal=False, color_system=None),
     )
+    manager.stop()
+
+
+def test_sonarr_expansion_uses_cache_for_repeat_item(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("walkmarr.queue_manager.ensure_required_tools", lambda: "AtomicParsley")
+
+    sonarr = FakeSonarrProvider()
+    manager = QueueManager(
+        config=_config(tmp_path),
+        sonarr_provider=sonarr,
+        radarr_provider=FakeRadarrProvider(),
+        console=Console(file=StringIO(), force_terminal=False, color_system=None),
+    )
+    queue_item = QueueItem(id="q1", provider="sonarr", provider_item_id=1, title="Futurama")
+
+    first_items, _ = manager._expand_queue_item(queue_item)
+    second_items, _ = manager._expand_queue_item(queue_item)
+
+    assert len(first_items) == 1
+    assert len(second_items) == 1
+    assert sonarr.get_series_by_id_calls == 1
+    assert sonarr.list_episodes_calls == 1
+    assert sonarr.list_episode_files_calls == 1
+
     manager.stop()

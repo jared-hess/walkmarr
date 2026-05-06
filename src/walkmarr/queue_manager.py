@@ -52,6 +52,9 @@ class QueueManager:
         self._current_queue_item_id: str | None = None
         self._current_cancellation: CancellationToken | None = None
         self._atomicparsley_bin = ensure_required_tools()
+        self._series_cache: dict[int, dict[str, Any]] = {}
+        self._sonarr_expansion_cache: dict[int, tuple[list[MediaItem], str]] = {}
+        self._movie_cache: dict[int, dict[str, Any]] = {}
         self._notifier = Thread(
             target=self._notification_loop,
             name="walkmarr-queue-notifier",
@@ -369,17 +372,77 @@ class QueueManager:
 
     def _expand_queue_item(self, queue_item: QueueItem) -> tuple[list[MediaItem], str]:
         if queue_item.provider == "sonarr":
-            series = self._sonarr.list_series()
-            selected = next(
-                (item for item in series if isinstance(item.get("id"), int) and item.get("id") == queue_item.provider_item_id),
-                None,
+            cached = self._sonarr_expansion_cache.get(queue_item.provider_item_id)
+            if cached is not None:
+                self._notify_locked(
+                    "log",
+                    self._find_by_id_locked(queue_item.id),
+                    ProgressEvent(
+                        level="debug",
+                        message=f"[{queue_item.title}] Using cached expansion payload",
+                        queue_item_id=queue_item.id,
+                        provider=queue_item.provider,
+                        current_stage="expanding",
+                    ),
+                )
+                return cached
+
+            self._notify_locked(
+                "log",
+                self._find_by_id_locked(queue_item.id),
+                ProgressEvent(
+                    level="info",
+                    message=f"[{queue_item.title}] Fetching series details",
+                    queue_item_id=queue_item.id,
+                    provider=queue_item.provider,
+                    current_stage="expanding",
+                ),
             )
+            selected = self._series_cache.get(queue_item.provider_item_id)
             if selected is None:
-                raise ProviderError(f"Sonarr item id {queue_item.provider_item_id} not found")
+                selected = self._sonarr.get_series_by_id(queue_item.provider_item_id)
+                self._series_cache[queue_item.provider_item_id] = selected
+
             selected_title = str(selected.get("title", queue_item.title))
             profile_name = profile_name_for_title(self._config, "sonarr", selected_title)
+
+            self._notify_locked(
+                "log",
+                self._find_by_id_locked(queue_item.id),
+                ProgressEvent(
+                    level="info",
+                    message=f"[{queue_item.title}] Fetching episodes",
+                    queue_item_id=queue_item.id,
+                    provider=queue_item.provider,
+                    current_stage="expanding",
+                ),
+            )
             episodes = self._sonarr.list_episodes(queue_item.provider_item_id)
+
+            self._notify_locked(
+                "log",
+                self._find_by_id_locked(queue_item.id),
+                ProgressEvent(
+                    level="info",
+                    message=f"[{queue_item.title}] Fetching episode files",
+                    queue_item_id=queue_item.id,
+                    provider=queue_item.provider,
+                    current_stage="expanding",
+                ),
+            )
             episode_files = self._sonarr.list_episode_files(queue_item.provider_item_id)
+
+            self._notify_locked(
+                "log",
+                self._find_by_id_locked(queue_item.id),
+                ProgressEvent(
+                    level="info",
+                    message=f"[{queue_item.title}] Building media file list",
+                    queue_item_id=queue_item.id,
+                    provider=queue_item.provider,
+                    current_stage="expanding",
+                ),
+            )
             media_items = self._sonarr.build_media_items(
                 series_title=selected_title,
                 episodes=episodes,
@@ -391,22 +454,41 @@ class QueueManager:
             )
             if not media_items:
                 raise ProviderError(f"No episode files found for '{selected_title}'")
-            return media_items, profile_name
+            result = (media_items, profile_name)
+            self._sonarr_expansion_cache[queue_item.provider_item_id] = result
+            return result
 
         if queue_item.provider == "radarr":
-            movies = self._radarr.list_movies()
-            selected_movie = next(
-                (
-                    movie
-                    for movie in movies
-                    if isinstance(movie.get("id"), int) and movie.get("id") == queue_item.provider_item_id
+            self._notify_locked(
+                "log",
+                self._find_by_id_locked(queue_item.id),
+                ProgressEvent(
+                    level="info",
+                    message=f"[{queue_item.title}] Fetching movie details",
+                    queue_item_id=queue_item.id,
+                    provider=queue_item.provider,
+                    current_stage="expanding",
                 ),
-                None,
             )
+            selected_movie = self._movie_cache.get(queue_item.provider_item_id)
             if selected_movie is None:
-                raise ProviderError(f"Radarr item id {queue_item.provider_item_id} not found")
+                selected_movie = self._radarr.get_movie_by_id(queue_item.provider_item_id)
+                self._movie_cache[queue_item.provider_item_id] = selected_movie
+
             title = str(selected_movie.get("title", queue_item.title))
             profile_name = profile_name_for_title(self._config, "radarr", title)
+
+            self._notify_locked(
+                "log",
+                self._find_by_id_locked(queue_item.id),
+                ProgressEvent(
+                    level="info",
+                    message=f"[{queue_item.title}] Building media file",
+                    queue_item_id=queue_item.id,
+                    provider=queue_item.provider,
+                    current_stage="expanding",
+                ),
+            )
             media_item = self._radarr.build_media_item(
                 movie=selected_movie,
                 profile_name=profile_name,
