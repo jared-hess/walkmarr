@@ -8,7 +8,13 @@ from rich.console import Console
 
 from walkmarr.exceptions import WalkmarrError
 from walkmarr.models import AppConfig, MediaItem, PathMapping, ProviderConfig, VideoProfile
-from walkmarr.process import CancellationToken, ProcessResult, ProgressEvent, process_media_items
+from walkmarr.process import (
+    CancellationToken,
+    ProcessResult,
+    ProgressEvent,
+    _run_subprocess_cancellable,
+    process_media_items,
+)
 
 
 def _config(tmp_path: Path) -> AppConfig:
@@ -137,3 +143,37 @@ def test_process_media_items_continue_on_error(
 
     assert result.converted == 1
     assert result.failed == 1
+
+
+def test_cancellable_subprocess_uses_devnull(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProc:
+        def poll(self) -> int | None:
+            return 0
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            return 0
+
+        def kill(self) -> None:
+            return None
+
+    def _fake_popen(command: list[str], **kwargs: object) -> FakeProc:
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr("walkmarr.process.subprocess.Popen", _fake_popen)
+
+    token = CancellationToken()
+    _run_subprocess_cancellable(["ffmpeg", "-version"], "ffmpeg", token)
+
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert "stdin" in kwargs and kwargs["stdin"] is not None
+    assert "stdout" in kwargs and kwargs["stdout"] is not None
+    assert "stderr" in kwargs and kwargs["stderr"] is not None

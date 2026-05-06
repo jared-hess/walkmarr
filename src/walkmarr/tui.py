@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
+import threading
 from typing import Any
 
 from rich.console import Console
@@ -49,6 +50,15 @@ class LogEvent(Message):
 class ConfirmScreen(ModalScreen[bool]):
     """Simple yes/no confirmation modal."""
 
+    BINDINGS = [
+        Binding("enter", "confirm", "Confirm", show=False),
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("left", "focus_no", show=False),
+        Binding("right", "focus_yes", show=False),
+        Binding("tab", "focus_next", show=False),
+        Binding("shift+tab", "focus_previous", show=False),
+    ]
+
     CSS = """
     ConfirmScreen {
         align: center middle;
@@ -78,11 +88,26 @@ class ConfirmScreen(ModalScreen[bool]):
                 yield Button("Cancel", id="confirm-no")
                 yield Button("Confirm", id="confirm-yes", variant="primary")
 
+    def on_mount(self) -> None:
+        self.query_one("#confirm-yes", Button).focus()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "confirm-yes":
             self.dismiss(True)
         else:
             self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_focus_no(self) -> None:
+        self.query_one("#confirm-no", Button).focus()
+
+    def action_focus_yes(self) -> None:
+        self.query_one("#confirm-yes", Button).focus()
 
 
 class WalkmarrTUI(App[None]):
@@ -185,6 +210,9 @@ class WalkmarrTUI(App[None]):
         self._refresh_summary()
         self.focus_zone = "media"
         media_table.focus()
+
+    def on_unmount(self) -> None:
+        self._queue.stop()
 
     def action_cycle_focus(self) -> None:
         order = [
@@ -361,9 +389,15 @@ class WalkmarrTUI(App[None]):
         event: ProgressEvent | None,
     ) -> None:
         if event_type == "queue":
-            self.call_from_thread(self.post_message, QueueChanged(item))
+            self._post_ui_message(QueueChanged(item))
         elif event_type == "log" and event is not None:
-            self.call_from_thread(self.post_message, LogEvent(event))
+            self._post_ui_message(LogEvent(event))
+
+    def _post_ui_message(self, message: Message) -> None:
+        if threading.get_ident() == self._thread_id:
+            self.post_message(message)
+            return
+        self.call_from_thread(self.post_message, message)
 
     def _apply_search_filter(self, term: str) -> None:
         query = term.casefold().strip()

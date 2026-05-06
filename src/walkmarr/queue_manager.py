@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
+import queue
 from threading import Condition, Lock, Thread
 from typing import Any
 from uuid import uuid4
@@ -20,6 +21,7 @@ from walkmarr.providers.sonarr import SonarrProvider
 
 
 QueueObserver = Callable[[str, QueueItem | None, ProgressEvent | None], None]
+_NOTIFY_STOP: tuple[str, QueueItem | None, ProgressEvent | None] = ("__stop__", None, None)
 
 
 class QueueManager:
@@ -41,11 +43,21 @@ class QueueManager:
         self._lock = Lock()
         self._condition = Condition(self._lock)
         self._observers: list[QueueObserver] = []
+        self._notifications: queue.SimpleQueue[tuple[str, QueueItem | None, ProgressEvent | None]] = (
+            queue.SimpleQueue()
+        )
         self._items: list[QueueItem] = []
+        self._shutdown = False
         self._paused = config.queue_start_paused
         self._current_queue_item_id: str | None = None
         self._current_cancellation: CancellationToken | None = None
         self._atomicparsley_bin = ensure_required_tools()
+        self._notifier = Thread(
+            target=self._notification_loop,
+            name="walkmarr-queue-notifier",
+            daemon=True,
+        )
+        self._notifier.start()
         self._worker = Thread(target=self._worker_loop, name="walkmarr-queue-worker", daemon=True)
         self._worker.start()
 
@@ -55,6 +67,8 @@ class QueueManager:
 
     def add_item(self, item: QueueItem) -> str:
         with self._condition:
+            if self._shutdown:
+                raise WalkmarrError("Queue manager is shutting down")
             duplicate = self._find_duplicate_locked(item.provider, item.provider_item_id)
             if duplicate is not None and duplicate.status in {
                 QueueItemStatus.PENDING,
@@ -203,7 +217,9 @@ class QueueManager:
     def _worker_loop(self) -> None:
         while True:
             with self._condition:
-                self._condition.wait_for(self._has_work_locked)
+                self._condition.wait_for(lambda: self._shutdown or self._has_work_locked())
+                if self._shutdown:
+                    return
                 next_item = self._next_pending_locked()
                 if next_item is None:
                     continue
@@ -296,6 +312,18 @@ class QueueManager:
                 with self._condition:
                     self._current_cancellation = None
                     self._current_queue_item_id = None
+
+    def stop(self) -> None:
+        """Stop queue worker and notifier threads safely."""
+        with self._condition:
+            self._shutdown = True
+            if self._current_cancellation is not None:
+                self._current_cancellation.cancel()
+            self._condition.notify_all()
+
+        self._notifications.put(_NOTIFY_STOP)
+        self._worker.join(timeout=5)
+        self._notifier.join(timeout=5)
 
     def _on_progress(self, event: ProgressEvent) -> None:
         queue_item_id = event.queue_item_id
@@ -438,6 +466,17 @@ class QueueManager:
         self._items[index] = replace(self._items[index], **fields)
 
     def _notify_locked(self, event_type: str, item: QueueItem | None, event: ProgressEvent | None) -> None:
-        observers = list(self._observers)
-        for observer in observers:
-            observer(event_type, item, event)
+        self._notifications.put((event_type, item, event))
+
+    def _notification_loop(self) -> None:
+        while True:
+            event_type, item, event = self._notifications.get()
+            if (event_type, item, event) == _NOTIFY_STOP:
+                return
+            with self._lock:
+                observers = list(self._observers)
+            for observer in observers:
+                try:
+                    observer(event_type, item, event)
+                except Exception:
+                    continue

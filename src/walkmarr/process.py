@@ -658,7 +658,12 @@ def _run_subprocess_cancellable(
     cancellation_token: CancellationToken,
 ) -> None:
     try:
-        process = subprocess.Popen(command)
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except FileNotFoundError as exc:
         raise ConversionError(f"{label} binary not found: {command[0]}") from exc
 

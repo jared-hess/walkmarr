@@ -188,3 +188,48 @@ def test_queue_manager_processes_fifo_and_accepts_new_items_while_running(
     assert second.status == QueueItemStatus.COMPLETE
     assert first.completed_files >= 1
     assert second.completed_files >= 1
+
+
+def test_queue_notifications_do_not_deadlock_on_reentrant_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("walkmarr.queue_manager.ensure_required_tools", lambda: "AtomicParsley")
+
+    def _fake_process_media_items(**kwargs: object) -> BatchProcessResult:
+        del kwargs
+        return BatchProcessResult(converted=0, skipped=1, failed=0)
+
+    monkeypatch.setattr("walkmarr.queue_manager.process_media_items", _fake_process_media_items)
+
+    manager = QueueManager(
+        config=_config(tmp_path),
+        sonarr_provider=FakeSonarrProvider(),
+        radarr_provider=FakeRadarrProvider(),
+        console=Console(file=StringIO(), force_terminal=False, color_system=None),
+    )
+
+    observed = {"seen": False}
+
+    def _observer(_event_type: str, _item: QueueItem | None, _event: ProgressEvent | None) -> None:
+        _ = manager.get_items()
+        observed["seen"] = True
+
+    manager.add_observer(_observer)
+    manager.add_item(QueueItem(id="", provider="sonarr", provider_item_id=1, title="Futurama"))
+
+    _wait_for(lambda: observed["seen"])
+
+
+def test_queue_manager_stop_returns_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("walkmarr.queue_manager.ensure_required_tools", lambda: "AtomicParsley")
+    manager = QueueManager(
+        config=_config(tmp_path),
+        sonarr_provider=FakeSonarrProvider(),
+        radarr_provider=FakeRadarrProvider(),
+        console=Console(file=StringIO(), force_terminal=False, color_system=None),
+    )
+    manager.stop()

@@ -1,7 +1,9 @@
 from pathlib import Path
+import threading
 
 from walkmarr.models import AppConfig, PathMapping, ProviderConfig, QueueItem, QueueItemStatus, VideoProfile
-from walkmarr.tui import WalkmarrTUI
+from walkmarr.process import ProgressEvent
+from walkmarr.tui import ConfirmScreen, LogEvent, QueueChanged, WalkmarrTUI
 
 
 def _config(tmp_path: Path) -> AppConfig:
@@ -76,3 +78,33 @@ def test_readd_completed_item_requires_confirmation(monkeypatch, tmp_path: Path)
 
     app._add_selected_media_to_queue(mode="missing_only", dry_run=False)
     assert pushed["count"] == 1
+
+
+def test_queue_observer_posts_directly_on_app_thread(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("walkmarr.queue_manager.ensure_required_tools", lambda: "AtomicParsley")
+    app = WalkmarrTUI(_config(tmp_path))
+    app._thread_id = threading.get_ident()
+
+    posted: list[object] = []
+    monkeypatch.setattr(app, "post_message", lambda message: posted.append(message))
+
+    app._on_queue_observer("queue", None, None)
+    app._on_queue_observer(
+        "log",
+        None,
+        ProgressEvent(level="info", message="hello", current_stage="queued"),
+    )
+
+    assert any(isinstance(message, QueueChanged) for message in posted)
+    assert any(isinstance(message, LogEvent) for message in posted)
+
+
+def test_confirm_screen_actions_dismiss_expected_values(monkeypatch) -> None:
+    screen = ConfirmScreen("Confirm?")
+    dismissed: list[bool] = []
+    monkeypatch.setattr(screen, "dismiss", lambda value: dismissed.append(value))
+
+    screen.action_confirm()
+    screen.action_cancel()
+
+    assert dismissed == [True, False]
