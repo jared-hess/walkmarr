@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -35,6 +36,17 @@ class ConversionPlan:
     audio_channels: int
     audio_bitrate_kbps: int
     filter_expr: str
+
+
+@dataclass(frozen=True)
+class OutputValidationResult:
+    """Validation metrics for encoded output acceptance."""
+
+    source_duration_seconds: float
+    output_duration_seconds: float
+    allowed_shortfall_seconds: float
+    allowed_overage_seconds: float
+    output_size_bytes: int
 
 
 def require_binary(binary_name: str) -> None:
@@ -146,7 +158,8 @@ def build_ffmpeg_command(
     command = [
         ffmpeg_bin,
         "-y",
-        "-xerror",
+        "-fflags",
+        "+genpts",
         "-i",
         str(source_path),
         "-map",
@@ -195,6 +208,89 @@ def build_ffmpeg_command(
         audio_channels=audio_channels,
         audio_bitrate_kbps=audio_bitrate_kbps,
         filter_expr=filter_expr,
+    )
+
+
+def probe_duration_seconds(path: Path, ffprobe_bin: str = "ffprobe") -> float:
+    """Read media duration seconds from ffprobe format metadata."""
+    command = [
+        ffprobe_bin,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]
+    try:
+        completed = subprocess.run(command, check=True, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise ConversionError(f"ffprobe binary not found: {ffprobe_bin}") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() if exc.stderr else ""
+        raise ConversionError(f"ffprobe failed for '{path}': {stderr}") from exc
+
+    value = completed.stdout.strip()
+    if not value:
+        raise ConversionError(f"ffprobe returned empty duration for '{path}'")
+
+    try:
+        duration = float(value)
+    except ValueError as exc:
+        raise ConversionError(f"ffprobe returned invalid duration '{value}' for '{path}'") from exc
+
+    if not math.isfinite(duration) or duration <= 0:
+        raise ConversionError(f"ffprobe returned non-positive duration {duration} for '{path}'")
+
+    return duration
+
+
+def validate_encoded_output(
+    source_path: Path,
+    output_path: Path,
+    *,
+    min_size_bytes: int = 1_000_000,
+    ffprobe_bin: str = "ffprobe",
+) -> OutputValidationResult:
+    """Validate encoded output is readable and not suspiciously truncated."""
+    if not output_path.exists():
+        raise ConversionError(f"Output file was not created: {output_path}")
+
+    size = output_path.stat().st_size
+    if size < min_size_bytes:
+        raise ConversionError(
+            f"Output file is suspiciously small: {output_path} size={size} bytes min={min_size_bytes}"
+        )
+
+    source_duration = probe_duration_seconds(source_path, ffprobe_bin=ffprobe_bin)
+    output_duration = probe_duration_seconds(output_path, ffprobe_bin=ffprobe_bin)
+
+    allowed_shortfall = max(5.0, source_duration * 0.005)
+    allowed_overage = max(10.0, source_duration * 0.01)
+
+    if output_duration + allowed_shortfall < source_duration:
+        raise ConversionError(
+            "Output appears truncated: "
+            f"source={source_duration:.2f}s "
+            f"output={output_duration:.2f}s "
+            f"allowed_shortfall={allowed_shortfall:.2f}s"
+        )
+
+    if output_duration > source_duration + allowed_overage:
+        raise ConversionError(
+            "Output duration is suspiciously longer than source: "
+            f"source={source_duration:.2f}s "
+            f"output={output_duration:.2f}s "
+            f"allowed_overage={allowed_overage:.2f}s"
+        )
+
+    return OutputValidationResult(
+        source_duration_seconds=source_duration,
+        output_duration_seconds=output_duration,
+        allowed_shortfall_seconds=allowed_shortfall,
+        allowed_overage_seconds=allowed_overage,
+        output_size_bytes=size,
     )
 
 

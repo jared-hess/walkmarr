@@ -24,6 +24,7 @@ from walkmarr.convert.video import (
     probe_media,
     require_binary,
     run_ffmpeg,
+    validate_encoded_output,
 )
 from walkmarr.exceptions import ConversionError, TaggingError, WalkmarrError
 from walkmarr.models import AppConfig, MediaItem, VideoProfile
@@ -530,6 +531,12 @@ def _process_prepared_media_item(
             item=media_item,
         )
         _run_ffmpeg_with_cancellation(ffmpeg_plan.command, cancellation_token)
+        validation = validate_encoded_output(prepared.processing_source_path, tmp_output)
+        console.print("Validation passed:")
+        console.print(f"  Source duration: {validation.source_duration_seconds:.2f}s")
+        console.print(f"  Output duration: {validation.output_duration_seconds:.2f}s")
+        console.print(f"  Allowed shortfall: {validation.allowed_shortfall_seconds:.2f}s")
+        console.print(f"  Allowed overage: {validation.allowed_overage_seconds:.2f}s")
         _ensure_not_canceled(cancellation_token)
         _emit_progress(
             progress_callback,
@@ -543,6 +550,12 @@ def _process_prepared_media_item(
             item=media_item,
         )
         _run_atomicparsley_with_cancellation(tag_command, cancellation_token)
+        post_tag_validation = validate_encoded_output(prepared.processing_source_path, tmp_output)
+        console.print("Post-tag validation passed:")
+        console.print(f"  Source duration: {post_tag_validation.source_duration_seconds:.2f}s")
+        console.print(f"  Output duration: {post_tag_validation.output_duration_seconds:.2f}s")
+        console.print(f"  Allowed shortfall: {post_tag_validation.allowed_shortfall_seconds:.2f}s")
+        console.print(f"  Allowed overage: {post_tag_validation.allowed_overage_seconds:.2f}s")
         tmp_output.replace(final_output)
         _emit_progress(
             progress_callback,
@@ -557,6 +570,7 @@ def _process_prepared_media_item(
         )
     except (ConversionError, TaggingError, OSError) as exc:
         if tmp_output.exists():
+            console.print(f"Removing failed temp output: {tmp_output}")
             tmp_output.unlink()
         stage = "canceled" if _is_cancellation_error(exc) else "failed"
         level = "warning" if stage == "canceled" else "error"

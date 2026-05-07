@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from rich.console import Console
 
-from walkmarr.config import profile_name_for_title
+from walkmarr.config import profile_name_for_sonarr_series, profile_name_for_title
 from walkmarr.exceptions import ProviderError, WalkmarrError
 from walkmarr.models import AppConfig, MediaItem, QueueItem, QueueItemStatus
 from walkmarr.process import CancellationToken, ProgressEvent, ensure_required_tools, process_media_items
@@ -404,7 +404,7 @@ class QueueManager:
                 self._series_cache[queue_item.provider_item_id] = selected
 
             selected_title = str(selected.get("title", queue_item.title))
-            profile_name = profile_name_for_title(self._config, "sonarr", selected_title)
+            profile_name = profile_name_for_sonarr_series(self._config, selected)
 
             self._notify_locked(
                 "log",

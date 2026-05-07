@@ -14,6 +14,7 @@ from walkmarr.config import (
     default_bootstrap_config_path,
     default_bootstrap_payload,
     load_config,
+    profile_name_for_sonarr_series,
     profile_name_for_title,
     resolve_api_key,
 )
@@ -223,7 +224,7 @@ def sonarr_convert(
         if not isinstance(selected_id, int):
             raise ProviderError(f"Selected series '{selected_title}' has invalid Sonarr id")
 
-        profile_name = profile_name_for_title(app_config, "sonarr", selected_title)
+        profile_name = profile_name_for_sonarr_series(app_config, selected_series)
         profile = app_config.profiles.get(profile_name)
         if profile is None:
             raise ConfigError(f"Missing profile '{profile_name}' for Sonarr title '{selected_title}'")

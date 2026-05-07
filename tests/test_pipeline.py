@@ -1,5 +1,6 @@
 from pathlib import Path
 from io import StringIO
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -92,6 +93,15 @@ def test_process_media_items_handles_batch(
 
     monkeypatch.setattr("walkmarr.process.build_ffmpeg_command", _fake_build_ffmpeg)
     monkeypatch.setattr("walkmarr.process.run_atomicparsley", lambda _cmd: None)
+    monkeypatch.setattr(
+        "walkmarr.process.validate_encoded_output",
+        lambda _source, _output: SimpleNamespace(
+            source_duration_seconds=100.0,
+            output_duration_seconds=100.0,
+            allowed_shortfall_seconds=5.0,
+            allowed_overage_seconds=10.0,
+        ),
+    )
 
     def _fake_run_ffmpeg(command: list[str]) -> None:
         out_path = Path(command[-1])
