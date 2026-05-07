@@ -95,6 +95,26 @@ def test_validate_output_rejects_too_small(
         validate_encoded_output(source, output)
 
 
+def test_validate_output_allows_short_clip_under_default_min_size(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mov"
+    output = tmp_path / "output.tmp.mp4"
+    _write_file(source)
+    _write_file(output, size=701_849)
+
+    durations = {source: 26.27, output: 26.20}
+    monkeypatch.setattr(
+        "walkmarr.convert.video.probe_duration_seconds",
+        lambda path, ffprobe_bin="ffprobe": durations[path],
+    )
+
+    result = validate_encoded_output(source, output)
+    assert result.output_size_bytes == 701_849
+    assert result.minimum_size_bytes == 210_160
+
+
 def test_validate_output_rejects_unreadable_probe(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

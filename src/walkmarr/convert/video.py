@@ -47,6 +47,7 @@ class OutputValidationResult:
     allowed_shortfall_seconds: float
     allowed_overage_seconds: float
     output_size_bytes: int
+    minimum_size_bytes: int
 
 
 def require_binary(binary_name: str) -> None:
@@ -257,13 +258,16 @@ def validate_encoded_output(
     if not output_path.exists():
         raise ConversionError(f"Output file was not created: {output_path}")
 
-    size = output_path.stat().st_size
-    if size < min_size_bytes:
-        raise ConversionError(
-            f"Output file is suspiciously small: {output_path} size={size} bytes min={min_size_bytes}"
-        )
-
     source_duration = probe_duration_seconds(source_path, ffprobe_bin=ffprobe_bin)
+    duration_scaled_min_size = int(source_duration * 8_000)
+    effective_min_size = min(min_size_bytes, max(128_000, duration_scaled_min_size))
+
+    size = output_path.stat().st_size
+    if size < effective_min_size:
+        raise ConversionError(
+            "Output file is suspiciously small: "
+            f"{output_path} size={size} bytes min={effective_min_size}"
+        )
     output_duration = probe_duration_seconds(output_path, ffprobe_bin=ffprobe_bin)
 
     allowed_shortfall = max(5.0, source_duration * 0.005)
@@ -291,6 +295,7 @@ def validate_encoded_output(
         allowed_shortfall_seconds=allowed_shortfall,
         allowed_overage_seconds=allowed_overage,
         output_size_bytes=size,
+        minimum_size_bytes=effective_min_size,
     )
 
 

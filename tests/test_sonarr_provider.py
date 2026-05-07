@@ -112,6 +112,7 @@ def test_build_episode_media_items() -> None:
         profile_name="animation",
         path_mappings=[PathMapping(remote="Z:/shows", local=Path("/mnt/z/shows"))],
         output_root=Path("/mnt/d/ipod/shows"),
+        series_genre="Animation",
     )
 
     assert len(items) == 1
@@ -121,6 +122,7 @@ def test_build_episode_media_items() -> None:
         "/mnt/d/ipod/shows/Futurama/Season 1/Futurama - S01E01 - Space Pilot 3000.mp4"
     )
     assert item.title == "Space Pilot 3000"
+    assert item.genre == "Animation"
 
 
 def test_build_episode_media_items_multi_episode_range() -> None:

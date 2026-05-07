@@ -85,6 +85,7 @@ class SonarrProvider:
         profile_name: str,
         path_mappings: list[PathMapping],
         output_root: Path,
+        series_genre: str | None = None,
         allow_unmapped_existing_local: bool = False,
     ) -> list[MediaItem]:
         """Build normalized MediaItem list from Sonarr episode metadata."""
@@ -164,6 +165,7 @@ class SonarrProvider:
                     episode_number=episode_num,
                     episode_end_number=episode_end_num,
                     episode_id=episode_id,
+                    genre=series_genre,
                 )
             )
 

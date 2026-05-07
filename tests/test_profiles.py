@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from walkmarr.config import profile_name_for_sonarr_series, profile_name_for_title
+from walkmarr.config import (
+    profile_name_for_radarr_movie,
+    profile_name_for_sonarr_series,
+    profile_name_for_title,
+)
 from walkmarr.convert.video import calculate_maxrate_kbps
 from walkmarr.models import AppConfig, PathMapping, ProviderConfig, VideoProfile
 
@@ -81,3 +85,21 @@ def test_sonarr_profile_override_wins_over_genres() -> None:
     config = _config()
     series = {"title": "Arrested Development", "genres": ["Animation"]}
     assert profile_name_for_sonarr_series(config, series) == "live_action"
+
+
+def test_radarr_profile_uses_animation_genre() -> None:
+    config = _config()
+    movie = {"title": "Spider-Verse", "genres": ["Animation", "Action"]}
+    assert profile_name_for_radarr_movie(config, movie) == "animation"
+
+
+def test_radarr_profile_defaults_to_movie_for_non_animation() -> None:
+    config = _config()
+    movie = {"title": "Heat", "genres": ["Crime", "Drama"]}
+    assert profile_name_for_radarr_movie(config, movie) == "movie"
+
+
+def test_radarr_profile_override_wins_over_genres() -> None:
+    config = _config()
+    movie = {"title": "American Psycho", "genres": ["Animation"]}
+    assert profile_name_for_radarr_movie(config, movie) == "movie"

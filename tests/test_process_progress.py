@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import StringIO as IOString
 from io import StringIO
 from pathlib import Path
 
@@ -145,10 +146,14 @@ def test_process_media_items_continue_on_error(
     assert result.failed == 1
 
 
-def test_cancellable_subprocess_uses_devnull(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cancellable_subprocess_uses_captured_streams(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     class FakeProc:
+        def __init__(self) -> None:
+            self.stdout = IOString("")
+            self.stderr = IOString("")
+
         def poll(self) -> int | None:
             return 0
 

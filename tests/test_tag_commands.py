@@ -44,3 +44,24 @@ def test_movie_tag_command_contains_required_fields() -> None:
     assert "--stik" in cmd and cmd[cmd.index("--stik") + 1] == "Movie"
     assert "--title" in cmd and cmd[cmd.index("--title") + 1] == "American Psycho"
     assert "--year" in cmd and cmd[cmd.index("--year") + 1] == "2000"
+
+
+def test_tag_commands_include_genre_when_provided() -> None:
+    tv_cmd = build_tv_tag_command(
+        "AtomicParsley",
+        Path("/tmp/episode.mp4"),
+        episode_title="Pilot",
+        show_title="Show",
+        season_number=1,
+        episode_number=1,
+        genre="Comedy",
+    )
+    movie_cmd = build_movie_tag_command(
+        "AtomicParsley",
+        Path("/tmp/movie.mp4"),
+        movie_title="Movie",
+        year=None,
+        genre="Action",
+    )
+    assert "--genre" in tv_cmd and tv_cmd[tv_cmd.index("--genre") + 1] == "Comedy"
+    assert "--genre" in movie_cmd and movie_cmd[movie_cmd.index("--genre") + 1] == "Action"

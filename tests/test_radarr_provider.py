@@ -100,6 +100,7 @@ def test_build_movie_media_item() -> None:
         movie={
             "title": "American Psycho",
             "year": 2000,
+            "genres": ["Drama", "Crime"],
             "movieFile": {"path": "Z:/movies/American Psycho (2000)/source.mkv"},
         },
         profile_name="movie",
@@ -110,3 +111,4 @@ def test_build_movie_media_item() -> None:
     assert item.output_path == Path(
         "/mnt/d/ipod/movies/American Psycho (2000)/American Psycho (2000).mp4"
     )
+    assert item.genre == "Drama"

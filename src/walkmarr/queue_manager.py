@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from rich.console import Console
 
-from walkmarr.config import profile_name_for_sonarr_series, profile_name_for_title
+from walkmarr.config import profile_name_for_radarr_movie, profile_name_for_sonarr_series
 from walkmarr.exceptions import ProviderError, WalkmarrError
 from walkmarr.models import AppConfig, MediaItem, QueueItem, QueueItemStatus
 from walkmarr.process import CancellationToken, ProgressEvent, ensure_required_tools, process_media_items
@@ -450,6 +450,7 @@ class QueueManager:
                 profile_name=profile_name,
                 path_mappings=self._config.path_mappings,
                 output_root=self._config.output_roots["shows"],
+                series_genre=_primary_genre(selected),
                 allow_unmapped_existing_local=self._config.allow_unmapped_existing_local,
             )
             if not media_items:
@@ -475,8 +476,7 @@ class QueueManager:
                 selected_movie = self._radarr.get_movie_by_id(queue_item.provider_item_id)
                 self._movie_cache[queue_item.provider_item_id] = selected_movie
 
-            title = str(selected_movie.get("title", queue_item.title))
-            profile_name = profile_name_for_title(self._config, "radarr", title)
+            profile_name = profile_name_for_radarr_movie(self._config, selected_movie)
 
             self._notify_locked(
                 "log",
@@ -562,3 +562,13 @@ class QueueManager:
                     observer(event_type, item, event)
                 except Exception:
                     continue
+
+
+def _primary_genre(payload: dict[str, Any]) -> str | None:
+    genres = payload.get("genres")
+    if not isinstance(genres, list):
+        return None
+    for value in genres:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None

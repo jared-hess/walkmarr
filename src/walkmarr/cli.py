@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import logging
 from pathlib import Path
 from typing import Literal, cast
 
@@ -14,11 +15,12 @@ from walkmarr.config import (
     default_bootstrap_config_path,
     default_bootstrap_payload,
     load_config,
+    profile_name_for_radarr_movie,
     profile_name_for_sonarr_series,
-    profile_name_for_title,
     resolve_api_key,
 )
 from walkmarr.exceptions import ConfigError, ProviderError, WalkmarrError
+from walkmarr.logging_config import configure_file_logging
 from walkmarr.models import AppConfig
 from walkmarr.process import ensure_required_tools, process_media_items
 from walkmarr.providers.radarr import RadarrProvider
@@ -37,6 +39,7 @@ class RuntimeContext:
     console: Console
     loaded_path: Path | None = None
     config: AppConfig | None = None
+    log_path: Path | None = None
 
 
 def _get_config(ctx: RuntimeContext) -> AppConfig:
@@ -59,6 +62,16 @@ def _apply_staging_mode_override(config: AppConfig, staging_mode: str | None) ->
     return replace(config, staging_mode=normalized)
 
 
+def _primary_genre(payload: dict[str, object]) -> str | None:
+    genres = payload.get("genres")
+    if not isinstance(genres, list):
+        return None
+    for value in genres:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 @click.group()
 @click.option(
     "--config",
@@ -71,7 +84,18 @@ def _apply_staging_mode_override(config: AppConfig, staging_mode: str | None) ->
 @click.pass_context
 def main(click_ctx: click.Context, config_path: Path | None, verbose: bool) -> None:
     """Walkmarr CLI."""
-    click_ctx.obj = RuntimeContext(config_path=config_path, verbose=verbose, console=Console())
+    log_path = configure_file_logging(verbose=verbose)
+    logging.getLogger("walkmarr").info(
+        "CLI start config_path=%s verbose=%s",
+        config_path,
+        verbose,
+    )
+    click_ctx.obj = RuntimeContext(
+        config_path=config_path,
+        verbose=verbose,
+        console=Console(),
+        log_path=log_path,
+    )
 
 
 @main.group()
@@ -238,6 +262,7 @@ def sonarr_convert(
             profile_name=profile_name,
             path_mappings=app_config.path_mappings,
             output_root=app_config.output_roots["shows"],
+            series_genre=_primary_genre(selected_series),
             allow_unmapped_existing_local=app_config.allow_unmapped_existing_local,
         )
         if not items:
@@ -327,7 +352,7 @@ def radarr_convert(
         selected_movie = provider.match_movie(movie_title, movies)
         selected_title = str(selected_movie.get("title"))
 
-        profile_name = profile_name_for_title(app_config, "radarr", selected_title)
+        profile_name = profile_name_for_radarr_movie(app_config, selected_movie)
         profile = app_config.profiles.get(profile_name)
         if profile is None:
             raise ConfigError(f"Missing profile '{profile_name}' for Radarr title '{selected_title}'")

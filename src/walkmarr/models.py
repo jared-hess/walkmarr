@@ -59,6 +59,7 @@ class MediaItem:
     episode_id: str | None = None
     movie_title: str | None = None
     year: int | None = None
+    genre: str | None = None
 
 
 @dataclass(frozen=True)

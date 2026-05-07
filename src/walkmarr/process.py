@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import errno
+import logging
 import queue
 import shutil
 import shlex
@@ -12,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal, cast
+from typing import Callable, Literal, TextIO, cast
 
 from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
@@ -34,6 +35,10 @@ from walkmarr.tag.mp4 import (
     detect_atomicparsley_binary,
     run_atomicparsley,
 )
+
+
+LOGGER = logging.getLogger("walkmarr")
+MAX_CAPTURED_SUBPROCESS_LINES = 400
 
 
 @dataclass(frozen=True)
@@ -481,12 +486,24 @@ def _process_prepared_media_item(
         profile=profile,
         probe=probe,
     )
+
+    LOGGER.info(
+        "Processing item provider=%s source=%s mapped=%s staged=%s temp_output=%s final_output=%s",
+        provider_name,
+        media_item.remote_source_path or str(media_item.source_path),
+        media_item.source_path,
+        prepared.processing_source_path,
+        tmp_output,
+        final_output,
+    )
+    LOGGER.info("ffmpeg command: %s", shlex.join(ffmpeg_plan.command))
     tag_command, metadata = _build_tag_command(
         config=config,
         media_item=media_item,
         atomicparsley_bin=atomicparsley_bin,
         media_path=tmp_output,
     )
+    LOGGER.info("tag command: %s", shlex.join(tag_command))
 
     _print_conversion_plan(
         console=console,
@@ -532,6 +549,15 @@ def _process_prepared_media_item(
         )
         _run_ffmpeg_with_cancellation(ffmpeg_plan.command, cancellation_token)
         validation = validate_encoded_output(prepared.processing_source_path, tmp_output)
+        LOGGER.info(
+            "Validation passed source=%.2fs output=%.2fs shortfall=%.2fs overage=%.2fs size=%s min_size=%s",
+            validation.source_duration_seconds,
+            validation.output_duration_seconds,
+            validation.allowed_shortfall_seconds,
+            validation.allowed_overage_seconds,
+            validation.output_size_bytes,
+            validation.minimum_size_bytes,
+        )
         console.print("Validation passed:")
         console.print(f"  Source duration: {validation.source_duration_seconds:.2f}s")
         console.print(f"  Output duration: {validation.output_duration_seconds:.2f}s")
@@ -551,6 +577,15 @@ def _process_prepared_media_item(
         )
         _run_atomicparsley_with_cancellation(tag_command, cancellation_token)
         post_tag_validation = validate_encoded_output(prepared.processing_source_path, tmp_output)
+        LOGGER.info(
+            "Post-tag validation passed source=%.2fs output=%.2fs shortfall=%.2fs overage=%.2fs size=%s min_size=%s",
+            post_tag_validation.source_duration_seconds,
+            post_tag_validation.output_duration_seconds,
+            post_tag_validation.allowed_shortfall_seconds,
+            post_tag_validation.allowed_overage_seconds,
+            post_tag_validation.output_size_bytes,
+            post_tag_validation.minimum_size_bytes,
+        )
         console.print("Post-tag validation passed:")
         console.print(f"  Source duration: {post_tag_validation.source_duration_seconds:.2f}s")
         console.print(f"  Output duration: {post_tag_validation.output_duration_seconds:.2f}s")
@@ -571,7 +606,9 @@ def _process_prepared_media_item(
     except (ConversionError, TaggingError, OSError) as exc:
         if tmp_output.exists():
             console.print(f"Removing failed temp output: {tmp_output}")
+            LOGGER.error("Removing failed temp output: %s", tmp_output)
             tmp_output.unlink()
+        LOGGER.error("Processing failed for %s: %s", media_item.source_path, exc)
         stage = "canceled" if _is_cancellation_error(exc) else "failed"
         level = "warning" if stage == "canceled" else "error"
         _emit_progress(
@@ -671,15 +708,35 @@ def _run_subprocess_cancellable(
     label: str,
     cancellation_token: CancellationToken,
 ) -> None:
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
     try:
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
         )
     except FileNotFoundError as exc:
         raise ConversionError(f"{label} binary not found: {command[0]}") from exc
+
+    if process.stdout is None or process.stderr is None:
+        raise ConversionError(f"{label} did not expose output streams")
+
+    stdout_thread = threading.Thread(
+        target=_stream_subprocess_output,
+        args=(process.stdout, f"{label} stdout", logging.DEBUG, stdout_lines),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_stream_subprocess_output,
+        args=(process.stderr, f"{label} stderr", logging.INFO, stderr_lines),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
 
     while True:
         if cancellation_token.is_canceled:
@@ -689,15 +746,43 @@ def _run_subprocess_cancellable(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+            stdout_thread.join(timeout=1)
+            stderr_thread.join(timeout=1)
             raise ConversionError("Conversion canceled")
         return_code = process.poll()
         if return_code is not None:
+            stdout_thread.join(timeout=1)
+            stderr_thread.join(timeout=1)
+            LOGGER.info("%s return code: %s", label, return_code)
             if return_code != 0:
+                stderr_tail = " | ".join(stderr_lines[-8:]) if stderr_lines else "no stderr output"
                 if label.casefold().startswith("ffmpeg"):
-                    raise ConversionError(f"ffmpeg conversion failed with exit code {return_code}")
-                raise TaggingError(f"AtomicParsley failed with exit code {return_code}")
+                    raise ConversionError(
+                        f"ffmpeg conversion failed with exit code {return_code}: {stderr_tail}"
+                    )
+                raise TaggingError(
+                    f"AtomicParsley failed with exit code {return_code}: {stderr_tail}"
+                )
             return
         time.sleep(0.1)
+
+
+def _stream_subprocess_output(
+    stream: TextIO,
+    label: str,
+    level: int,
+    collector: list[str],
+) -> None:
+    try:
+        for line in iter(stream.readline, ""):
+            cleaned = line.rstrip("\r\n")
+            if not cleaned:
+                continue
+            if len(collector) < MAX_CAPTURED_SUBPROCESS_LINES:
+                collector.append(cleaned)
+            LOGGER.log(level, "%s: %s", label, cleaned)
+    finally:
+        stream.close()
 
 
 def _queue_put_with_stop(
@@ -747,6 +832,7 @@ def _build_tag_command(
             season_number=tag_season,
             episode_number=tag_episode,
             tv_episode_id=media_item.episode_id,
+            genre=media_item.genre,
         )
         metadata: dict[str, str | int | None] = {
             "kind": "TV Show",
@@ -757,6 +843,7 @@ def _build_tag_command(
             "episode_id": media_item.episode_id or f"S{tag_season:02d}E{tag_episode:02d}",
             "artist": tag_show_title,
             "album": tag_show_title,
+            "genre": media_item.genre,
         }
         return command, metadata
 
@@ -767,6 +854,7 @@ def _build_tag_command(
             media_path,
             movie_title=movie_title,
             year=media_item.year,
+            genre=media_item.genre,
         )
         metadata = {
             "kind": "Movie",
@@ -774,6 +862,7 @@ def _build_tag_command(
             "year": media_item.year,
             "artist": movie_title,
             "album": movie_title,
+            "genre": media_item.genre,
         }
         return command, metadata
 

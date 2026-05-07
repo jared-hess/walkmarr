@@ -81,6 +81,14 @@ class RadarrProvider:
         if isinstance(year_raw, int):
             year = year_raw
 
+        genre: str | None = None
+        genres_raw = movie.get("genres")
+        if isinstance(genres_raw, list):
+            for value in genres_raw:
+                if isinstance(value, str) and value.strip():
+                    genre = value.strip()
+                    break
+
         movie_file = movie.get("movieFile")
         if not isinstance(movie_file, dict):
             raise ProviderError(f"Radarr movie '{movie_title}' has no movieFile")
@@ -106,6 +114,7 @@ class RadarrProvider:
             remote_source_path=remote_path,
             movie_title=movie_title,
             year=year,
+            genre=genre,
         )
 
     def _get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:

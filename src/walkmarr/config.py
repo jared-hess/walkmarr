@@ -416,6 +416,34 @@ def profile_name_for_sonarr_series(config: AppConfig, series: dict[str, Any]) ->
     return config.default_profiles["sonarr"]
 
 
+def profile_name_for_radarr_movie(config: AppConfig, movie: dict[str, Any]) -> str:
+    """Select Radarr profile using override and movie genres."""
+    title = str(movie.get("title", ""))
+    if title:
+        override = config.overrides.get("radarr", {}).get(title, {})
+        override_profile = override.get("profile")
+        if isinstance(override_profile, str) and override_profile:
+            return override_profile
+
+    genres_raw = movie.get("genres")
+    genres: set[str] = set()
+    if isinstance(genres_raw, list):
+        genres = {
+            str(genre).casefold().strip()
+            for genre in genres_raw
+            if isinstance(genre, str) and genre.strip()
+        }
+
+    if "animation" in genres or "anime" in genres:
+        if "animation" in config.profiles:
+            return "animation"
+        return config.default_profiles["radarr"]
+
+    if "movie" in config.profiles:
+        return "movie"
+    return config.default_profiles["radarr"]
+
+
 def sonarr_specials_show_name(config: AppConfig, series_title: str) -> str | None:
     """Return configured specials show name override, if any."""
     override = config.overrides.get("sonarr", {}).get(series_title, {})

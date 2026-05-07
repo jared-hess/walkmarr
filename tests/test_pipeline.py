@@ -100,6 +100,8 @@ def test_process_media_items_handles_batch(
             output_duration_seconds=100.0,
             allowed_shortfall_seconds=5.0,
             allowed_overage_seconds=10.0,
+            output_size_bytes=2_000_000,
+            minimum_size_bytes=1_000_000,
         ),
     )
 
