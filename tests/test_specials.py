@@ -44,7 +44,7 @@ def test_specials_show_name_override_changes_tag_season_to_one() -> None:
     assert command[command.index("--TVShowName") + 1] == "The Simpsons Shorts"
 
 
-def test_tv_tag_year_uses_air_date_when_available() -> None:
+def test_tv_tag_year_uses_full_air_date_when_available() -> None:
     config = AppConfig(
         providers={
             "sonarr": ProviderConfig(url="http://sonarr", api_key="x"),
@@ -78,6 +78,6 @@ def test_tv_tag_year_uses_air_date_when_available() -> None:
         media_path=Path("/tmp/out.tmp.mp4"),
     )
 
-    assert metadata["year"] == 1999
+    assert metadata["year"] == "1999-03-28T00:00:00Z"
     assert "--year" in command
-    assert command[command.index("--year") + 1] == "1999"
+    assert command[command.index("--year") + 1] == "1999-03-28T00:00:00Z"

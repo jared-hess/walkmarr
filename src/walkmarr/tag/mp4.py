@@ -25,7 +25,7 @@ def build_tv_tag_command(
     show_title: str,
     season_number: int,
     episode_number: int,
-    year: int | None = None,
+    year: int | str | None = None,
     tv_episode_id: str | None = None,
     genre: str | None = None,
 ) -> list[str]:

@@ -824,7 +824,7 @@ def _build_tag_command(
                 tag_season = 1
                 tag_episode = media_item.episode_number
 
-        tag_year = _year_from_iso_date(media_item.air_date)
+        tag_year = _itunes_release_date_from_iso_date(media_item.air_date)
 
         command = build_tv_tag_command(
             atomicparsley_bin,
@@ -885,6 +885,21 @@ def _year_from_iso_date(value: str | None) -> int | None:
     if not year_text.isdigit():
         return None
     return int(year_text)
+
+
+def _itunes_release_date_from_iso_date(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) != 10:
+        return None
+    if value[4] != "-" or value[7] != "-":
+        return None
+    year_text = value[:4]
+    month_text = value[5:7]
+    day_text = value[8:10]
+    if not year_text.isdigit() or not month_text.isdigit() or not day_text.isdigit():
+        return None
+    return f"{value}T00:00:00Z"
 
 
 def _print_conversion_plan(
