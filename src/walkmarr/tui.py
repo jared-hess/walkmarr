@@ -379,6 +379,11 @@ class WalkmarrTUI(App[None]):
         if event.input.id == "search":
             self._apply_search_filter(event.value)
 
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "search":
+            self.action_focus_media()
+            event.stop()
+
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         self._handle_table_row_change(event.data_table, event.cursor_row)
 

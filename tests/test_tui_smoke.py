@@ -1,5 +1,6 @@
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 
 from walkmarr.models import AppConfig, PathMapping, ProviderConfig, QueueItem, QueueItemStatus, VideoProfile
 from walkmarr.process import ProgressEvent
@@ -108,3 +109,28 @@ def test_confirm_screen_actions_dismiss_expected_values(monkeypatch) -> None:
     screen.action_cancel()
 
     assert dismissed == [True, False]
+
+
+def test_search_submit_focuses_media_results(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("walkmarr.queue_manager.ensure_required_tools", lambda: "AtomicParsley")
+    app = WalkmarrTUI(_config(tmp_path))
+    focused = {"count": 0, "stopped": False}
+
+    class FakeTable:
+        def focus(self) -> None:
+            focused["count"] += 1
+
+    def _fake_query_one(selector: str, _widget_type: object = None) -> FakeTable:
+        assert selector == "#media-table"
+        return FakeTable()
+
+    event = SimpleNamespace(
+        input=SimpleNamespace(id="search"),
+        stop=lambda: focused.__setitem__("stopped", True),
+    )
+
+    monkeypatch.setattr(app, "query_one", _fake_query_one)
+    app.on_input_submitted(event)
+
+    assert app.focus_zone == "media"
+    assert focused == {"count": 1, "stopped": True}
