@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,10 @@ class RadarrProvider:
         if isinstance(year_raw, int):
             year = year_raw
 
+        release_date = _first_release_date(movie)
+        if year is None and release_date is not None:
+            year = int(release_date[:4])
+
         genre: str | None = None
         genres_raw = movie.get("genres")
         if isinstance(genres_raw, list):
@@ -114,6 +119,7 @@ class RadarrProvider:
             remote_source_path=remote_path,
             movie_title=movie_title,
             year=year,
+            release_date=release_date,
             genre=genre,
         )
 
@@ -132,3 +138,27 @@ class RadarrProvider:
             return response.json()
         except ValueError as exc:
             raise ProviderError(f"Radarr returned non-JSON response for {path}") from exc
+
+
+def _first_release_date(movie: dict[str, Any]) -> str | None:
+    for key in ("inCinemas", "digitalRelease", "physicalRelease"):
+        parsed = _extract_iso_date(movie.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _extract_iso_date(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) >= 10 and cleaned[4] == "-" and cleaned[7] == "-":
+        candidate = cleaned[:10]
+        try:
+            datetime.strptime(candidate, "%Y-%m-%d")
+        except ValueError:
+            return None
+        return candidate
+    return None

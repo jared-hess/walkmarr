@@ -100,6 +100,7 @@ def test_build_episode_media_items() -> None:
             "title": "Space Pilot 3000",
             "seasonNumber": 1,
             "episodeNumber": 1,
+            "airDate": "1999-03-28",
             "hasFile": True,
             "episodeFileId": 201,
         }
@@ -122,6 +123,7 @@ def test_build_episode_media_items() -> None:
         "/mnt/d/ipod/shows/Futurama/Season 1/Futurama - S01E01 - Space Pilot 3000.mp4"
     )
     assert item.title == "Space Pilot 3000"
+    assert item.air_date == "1999-03-28"
     assert item.genre == "Animation"
 
 

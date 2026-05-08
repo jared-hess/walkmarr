@@ -25,6 +25,7 @@ def build_tv_tag_command(
     show_title: str,
     season_number: int,
     episode_number: int,
+    year: int | None = None,
     tv_episode_id: str | None = None,
     genre: str | None = None,
 ) -> list[str]:
@@ -50,6 +51,8 @@ def build_tv_tag_command(
         "--album",
         show_title,
     ]
+    if year is not None:
+        command.extend(["--year", str(year)])
     if genre is not None and genre.strip():
         command.extend(["--genre", genre.strip()])
     command.append("--overWrite")

@@ -824,6 +824,8 @@ def _build_tag_command(
                 tag_season = 1
                 tag_episode = media_item.episode_number
 
+        tag_year = _year_from_iso_date(media_item.air_date)
+
         command = build_tv_tag_command(
             atomicparsley_bin,
             media_path,
@@ -831,6 +833,7 @@ def _build_tag_command(
             show_title=tag_show_title,
             season_number=tag_season,
             episode_number=tag_episode,
+            year=tag_year,
             tv_episode_id=media_item.episode_id,
             genre=media_item.genre,
         )
@@ -841,6 +844,8 @@ def _build_tag_command(
             "season": tag_season,
             "episode": tag_episode,
             "episode_id": media_item.episode_id or f"S{tag_season:02d}E{tag_episode:02d}",
+            "air_date": media_item.air_date,
+            "year": tag_year,
             "artist": tag_show_title,
             "album": tag_show_title,
             "genre": media_item.genre,
@@ -849,17 +854,19 @@ def _build_tag_command(
 
     if media_item.kind == "movie":
         movie_title = media_item.movie_title or media_item.title
+        tag_year = media_item.year if media_item.year is not None else _year_from_iso_date(media_item.release_date)
         command = build_movie_tag_command(
             atomicparsley_bin,
             media_path,
             movie_title=movie_title,
-            year=media_item.year,
+            year=tag_year,
             genre=media_item.genre,
         )
         metadata = {
             "kind": "Movie",
             "title": movie_title,
-            "year": media_item.year,
+            "year": tag_year,
+            "release_date": media_item.release_date,
             "artist": movie_title,
             "album": movie_title,
             "genre": media_item.genre,
@@ -867,6 +874,17 @@ def _build_tag_command(
         return command, metadata
 
     raise WalkmarrError(f"Unsupported media kind: {media_item.kind}")
+
+
+def _year_from_iso_date(value: str | None) -> int | None:
+    if value is None:
+        return None
+    if len(value) < 4:
+        return None
+    year_text = value[:4]
+    if not year_text.isdigit():
+        return None
+    return int(year_text)
 
 
 def _print_conversion_plan(
@@ -896,9 +914,13 @@ def _print_conversion_plan(
         console.print(f"  Season: {metadata['season']}")
         console.print(f"  Episode: {metadata['episode']}")
         console.print(f"  Title: {media_item.title}")
+        if metadata.get("air_date"):
+            console.print(f"  Air date: {metadata['air_date']}")
     else:
         console.print(f"  Movie: {metadata['title']}")
         console.print(f"  Year: {metadata['year']}")
+        if metadata.get("release_date"):
+            console.print(f"  Release date: {metadata['release_date']}")
 
     console.print(f"  Profile: {media_item.profile_name}")
     console.print(f"  CRF: {plan.command[plan.command.index('-crf') + 1]}")

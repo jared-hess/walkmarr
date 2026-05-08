@@ -65,3 +65,16 @@ def test_tag_commands_include_genre_when_provided() -> None:
     )
     assert "--genre" in tv_cmd and tv_cmd[tv_cmd.index("--genre") + 1] == "Comedy"
     assert "--genre" in movie_cmd and movie_cmd[movie_cmd.index("--genre") + 1] == "Action"
+
+
+def test_tv_tag_command_includes_year_when_provided() -> None:
+    cmd = build_tv_tag_command(
+        "AtomicParsley",
+        Path("/tmp/episode.mp4"),
+        episode_title="Pilot",
+        show_title="Show",
+        season_number=1,
+        episode_number=1,
+        year=1999,
+    )
+    assert "--year" in cmd and cmd[cmd.index("--year") + 1] == "1999"

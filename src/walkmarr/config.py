@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import yaml
 
 from walkmarr.exceptions import ConfigError
-from walkmarr.models import AppConfig, PathMapping, ProviderConfig, VideoProfile
+from walkmarr.models import AppConfig, GenreProfileRule, PathMapping, ProviderConfig, VideoProfile
 
 
 def config_search_paths() -> list[Path]:
@@ -47,7 +47,15 @@ def default_bootstrap_payload() -> dict[str, Any]:
             "default_mode": "missing_only",
             "remember_completed_until_exit": True,
         },
-        "default_profiles": {"sonarr": "animation", "radarr": "movie"},
+        "default_profiles": {"sonarr": "live_action", "radarr": "movie"},
+        "genre_profile_map": {
+            "sonarr": [
+                {"genres": ["animation", "anime"], "profile": "animation"},
+            ],
+            "radarr": [
+                {"genres": ["animation", "anime"], "profile": "animation"},
+            ],
+        },
         "profiles": {
             "animation": {
                 "crf": 30,
@@ -178,6 +186,68 @@ def _build_video_profile(name: str, data: dict[str, Any]) -> VideoProfile:
         raise ConfigError(f"Profile '{name}' has invalid value type: {exc}") from exc
 
 
+def _parse_genre_profile_map(payload: dict[str, Any]) -> dict[str, tuple[GenreProfileRule, ...]]:
+    raw = payload.get("genre_profile_map", {})
+    if not isinstance(raw, dict):
+        raise ConfigError("genre_profile_map must be a mapping")
+
+    parsed: dict[str, tuple[GenreProfileRule, ...]] = {"sonarr": (), "radarr": ()}
+    for provider_name in ("sonarr", "radarr"):
+        provider_rules_raw = raw.get(provider_name, [])
+        if provider_rules_raw is None:
+            provider_rules_raw = []
+        if not isinstance(provider_rules_raw, list):
+            raise ConfigError(f"genre_profile_map.{provider_name} must be a list")
+
+        rules: list[GenreProfileRule] = []
+        for index, rule_raw in enumerate(provider_rules_raw):
+            if not isinstance(rule_raw, dict):
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}] must be a mapping"
+                )
+
+            profile_raw = rule_raw.get("profile")
+            if not isinstance(profile_raw, str) or not profile_raw.strip():
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}].profile must be a non-empty string"
+                )
+
+            genres_raw = rule_raw.get("genres")
+            if genres_raw is None:
+                genre_raw = rule_raw.get("genre")
+                if isinstance(genre_raw, str):
+                    genres_raw = [genre_raw]
+
+            if not isinstance(genres_raw, list):
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}] must include 'genres' list or 'genre' string"
+                )
+
+            normalized_genres: list[str] = []
+            for genre in genres_raw:
+                if not isinstance(genre, str) or not genre.strip():
+                    continue
+                normalized = genre.casefold().strip()
+                if normalized and normalized not in normalized_genres:
+                    normalized_genres.append(normalized)
+
+            if not normalized_genres:
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}] must include at least one non-empty genre"
+                )
+
+            rules.append(
+                GenreProfileRule(
+                    genres=tuple(normalized_genres),
+                    profile=profile_raw.strip(),
+                )
+            )
+
+        parsed[provider_name] = tuple(rules)
+
+    return parsed
+
+
 def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
     """Load, parse, and validate Walkmarr config.
 
@@ -300,6 +370,8 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
         queue_raw.get("remember_completed_until_exit", True)
     )
 
+    genre_profile_map = _parse_genre_profile_map(payload)
+
     app_config = AppConfig(
         providers=providers,
         path_mappings=path_mappings,
@@ -307,6 +379,7 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
         default_profiles={"sonarr": str(default_profiles["sonarr"]), "radarr": str(default_profiles["radarr"] )},
         profiles=profiles,
         overrides=overrides,
+        genre_profile_map=genre_profile_map,
         staging_mode=validated_staging_mode,
         staging_directory=Path(staging_directory_raw),
         allow_unmapped_existing_local=bool(payload.get("allow_unmapped_existing_local", False)),
@@ -349,6 +422,13 @@ def _validate_profiles_exist(config: AppConfig) -> None:
             if override_profile_name not in config.profiles:
                 raise ConfigError(
                     f"Override profile '{override_profile_name}' for {provider_name}:{title} is not defined"
+                )
+
+    for provider_name in ("sonarr", "radarr"):
+        for index, rule in enumerate(config.genre_profile_map.get(provider_name, ())):
+            if rule.profile not in config.profiles:
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}] profile '{rule.profile}' is not defined"
                 )
 
 
@@ -397,14 +477,11 @@ def profile_name_for_sonarr_series(config: AppConfig, series: dict[str, Any]) ->
         if isinstance(override_profile, str) and override_profile:
             return override_profile
 
-    genres_raw = series.get("genres")
-    genres: set[str] = set()
-    if isinstance(genres_raw, list):
-        genres = {
-            str(genre).casefold().strip()
-            for genre in genres_raw
-            if isinstance(genre, str) and genre.strip()
-        }
+    genres = _normalized_genre_set(series.get("genres"))
+
+    mapped_profile = _mapped_profile_for_genres(config, "sonarr", genres)
+    if mapped_profile is not None:
+        return mapped_profile
 
     if "animation" in genres or "anime" in genres:
         if "animation" in config.profiles:
@@ -425,14 +502,11 @@ def profile_name_for_radarr_movie(config: AppConfig, movie: dict[str, Any]) -> s
         if isinstance(override_profile, str) and override_profile:
             return override_profile
 
-    genres_raw = movie.get("genres")
-    genres: set[str] = set()
-    if isinstance(genres_raw, list):
-        genres = {
-            str(genre).casefold().strip()
-            for genre in genres_raw
-            if isinstance(genre, str) and genre.strip()
-        }
+    genres = _normalized_genre_set(movie.get("genres"))
+
+    mapped_profile = _mapped_profile_for_genres(config, "radarr", genres)
+    if mapped_profile is not None:
+        return mapped_profile
 
     if "animation" in genres or "anime" in genres:
         if "animation" in config.profiles:
@@ -451,3 +525,28 @@ def sonarr_specials_show_name(config: AppConfig, series_title: str) -> str | Non
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _normalized_genre_set(genres_raw: object) -> set[str]:
+    if not isinstance(genres_raw, list):
+        return set()
+    return {
+        str(genre).casefold().strip()
+        for genre in genres_raw
+        if isinstance(genre, str) and genre.strip()
+    }
+
+
+def _mapped_profile_for_genres(
+    config: AppConfig,
+    provider_name: Literal["sonarr", "radarr"],
+    genres: set[str],
+) -> str | None:
+    rules = config.genre_profile_map.get(provider_name, ())
+    if not rules:
+        return None
+
+    for rule in rules:
+        if any(genre in genres for genre in rule.genres):
+            return rule.profile
+    return config.default_profiles[provider_name]

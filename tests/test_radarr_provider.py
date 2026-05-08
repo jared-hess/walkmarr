@@ -101,6 +101,7 @@ def test_build_movie_media_item() -> None:
             "title": "American Psycho",
             "year": 2000,
             "genres": ["Drama", "Crime"],
+            "inCinemas": "2000-01-21T00:00:00Z",
             "movieFile": {"path": "Z:/movies/American Psycho (2000)/source.mkv"},
         },
         profile_name="movie",
@@ -111,4 +112,22 @@ def test_build_movie_media_item() -> None:
     assert item.output_path == Path(
         "/mnt/d/ipod/movies/American Psycho (2000)/American Psycho (2000).mp4"
     )
+    assert item.release_date == "2000-01-21"
     assert item.genre == "Drama"
+
+
+def test_build_movie_media_item_uses_release_date_year_when_missing() -> None:
+    provider = _provider(FakeSession({}))
+    item = provider.build_media_item(
+        movie={
+            "title": "Classic",
+            "inCinemas": "1979-05-25T00:00:00Z",
+            "movieFile": {"path": "Z:/movies/Classic/source.mkv"},
+        },
+        profile_name="movie",
+        path_mappings=[PathMapping(remote="Z:/movies", local=Path("/mnt/z/movies"))],
+        output_root=Path("/mnt/d/ipod/movies"),
+    )
+
+    assert item.year == 1979
+    assert item.release_date == "1979-05-25"

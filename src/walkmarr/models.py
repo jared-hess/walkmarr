@@ -57,9 +57,19 @@ class MediaItem:
     episode_number: int | None = None
     episode_end_number: int | None = None
     episode_id: str | None = None
+    air_date: str | None = None
     movie_title: str | None = None
     year: int | None = None
+    release_date: str | None = None
     genre: str | None = None
+
+
+@dataclass(frozen=True)
+class GenreProfileRule:
+    """Ordered genre-to-profile selection rule."""
+
+    genres: tuple[str, ...]
+    profile: str
 
 
 @dataclass(frozen=True)
@@ -72,6 +82,9 @@ class AppConfig:
     default_profiles: dict[str, str]
     profiles: dict[str, VideoProfile]
     overrides: dict[str, dict[str, dict[str, Any]]]
+    genre_profile_map: dict[str, tuple[GenreProfileRule, ...]] = field(
+        default_factory=lambda: {"sonarr": (), "radarr": ()}
+    )
     staging_mode: Literal["auto", "always", "never"] = "auto"
     staging_directory: Path = Path("/tmp/walkmarr-staging")
     allow_unmapped_existing_local: bool = False

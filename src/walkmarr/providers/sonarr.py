@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,9 @@ class SonarrProvider:
                     if candidate_end > episode_num:
                         episode_end_num = candidate_end
             episode_title = str(selected_episode.get("title", ""))
+            air_date = _extract_iso_date(selected_episode.get("airDate"))
+            if air_date is None:
+                air_date = _extract_iso_date(selected_episode.get("airDateUtc"))
 
             output_path = build_tv_output_path(
                 output_root=output_root,
@@ -165,6 +169,7 @@ class SonarrProvider:
                     episode_number=episode_num,
                     episode_end_number=episode_end_num,
                     episode_id=episode_id,
+                    air_date=air_date,
                     genre=series_genre,
                 )
             )
@@ -193,3 +198,19 @@ class SonarrProvider:
             return response.json()
         except ValueError as exc:
             raise ProviderError(f"Sonarr returned non-JSON response for {path}") from exc
+
+
+def _extract_iso_date(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) >= 10 and cleaned[4] == "-" and cleaned[7] == "-":
+        candidate = cleaned[:10]
+        try:
+            datetime.strptime(candidate, "%Y-%m-%d")
+        except ValueError:
+            return None
+        return candidate
+    return None

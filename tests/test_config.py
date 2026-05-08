@@ -268,3 +268,60 @@ queue:
 
     with pytest.raises(ConfigError, match="queue.workers must be 1"):
         load_config(cfg_path)
+
+
+def test_load_config_rejects_genre_profile_map_unknown_profile(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        """
+providers:
+  sonarr:
+    url: "http://localhost:8989"
+    api_key: "x"
+  radarr:
+    url: "http://localhost:7878"
+    api_key: "y"
+path_mappings:
+  - remote: "/tv"
+    local: "/mnt/z/shows"
+  - remote: "/movies"
+    local: "/mnt/z/movies"
+output_roots:
+  shows: "/mnt/d/ipod/shows"
+  movies: "/mnt/d/ipod/movies"
+default_profiles:
+  sonarr: "animation"
+  radarr: "movie"
+profiles:
+  animation:
+    crf: 30
+    maxrate_floor_kbps: 250
+    maxrate_cap_kbps: 1200
+    bitrate_multiplier: 1.5
+    audio_bitrate_mono_kbps: 64
+    audio_bitrate_stereo_kbps: 96
+    max_width: 640
+    h264_profile: "baseline"
+    h264_level: "3.0"
+  movie:
+    crf: 27
+    maxrate_floor_kbps: 400
+    maxrate_cap_kbps: 1500
+    bitrate_multiplier: 1.5
+    audio_bitrate_mono_kbps: 64
+    audio_bitrate_stereo_kbps: 96
+    max_width: 640
+    h264_profile: "baseline"
+    h264_level: "3.0"
+genre_profile_map:
+  sonarr:
+    - genres: ["documentary"]
+      profile: "docs"
+""",
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match=r"genre_profile_map\.sonarr\[0\] profile 'docs' is not defined",
+    ):
+        load_config(cfg_path)

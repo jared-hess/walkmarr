@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 
 from walkmarr.config import (
     profile_name_for_radarr_movie,
@@ -6,7 +7,7 @@ from walkmarr.config import (
     profile_name_for_title,
 )
 from walkmarr.convert.video import calculate_maxrate_kbps
-from walkmarr.models import AppConfig, PathMapping, ProviderConfig, VideoProfile
+from walkmarr.models import AppConfig, GenreProfileRule, PathMapping, ProviderConfig, VideoProfile
 
 
 def _profile() -> VideoProfile:
@@ -103,3 +104,32 @@ def test_radarr_profile_override_wins_over_genres() -> None:
     config = _config()
     movie = {"title": "American Psycho", "genres": ["Animation"]}
     assert profile_name_for_radarr_movie(config, movie) == "movie"
+
+
+def test_genre_profile_map_matches_top_down() -> None:
+    config = replace(
+        _config(),
+        default_profiles={"sonarr": "movie", "radarr": "movie"},
+        genre_profile_map={
+            "sonarr": (
+                GenreProfileRule(genres=("comedy",), profile="live_action"),
+                GenreProfileRule(genres=("action",), profile="animation"),
+            ),
+            "radarr": (),
+        },
+    )
+    series = {"title": "Mixed Show", "genres": ["Action", "Comedy"]}
+    assert profile_name_for_sonarr_series(config, series) == "live_action"
+
+
+def test_genre_profile_map_falls_back_to_default_profile() -> None:
+    config = replace(
+        _config(),
+        default_profiles={"sonarr": "live_action", "radarr": "movie"},
+        genre_profile_map={
+            "sonarr": (GenreProfileRule(genres=("documentary",), profile="movie"),),
+            "radarr": (),
+        },
+    )
+    series = {"title": "Drama Show", "genres": ["Drama"]}
+    assert profile_name_for_sonarr_series(config, series) == "live_action"

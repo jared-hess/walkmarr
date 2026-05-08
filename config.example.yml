@@ -30,8 +30,17 @@ queue:
   remember_completed_until_exit: true
 
 default_profiles:
-  sonarr: "animation"
+  sonarr: "live_action"
   radarr: "movie"
+
+genre_profile_map:
+  sonarr:
+    - genres: ["animation", "anime"]
+      profile: "animation"
+
+  radarr:
+    - genres: ["animation", "anime"]
+      profile: "animation"
 
 profiles:
   animation:
