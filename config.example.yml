@@ -45,38 +45,44 @@ genre_profile_map:
 profiles:
   animation:
     crf: 30
+    video_bitrate_kbps: 500
     maxrate_floor_kbps: 250
-    maxrate_cap_kbps: 1200
+    maxrate_cap_kbps: 768
+    bufsize_kbps: 1500
     bitrate_multiplier: 1.5
-    audio_bitrate_mono_kbps: 64
-    audio_bitrate_stereo_kbps: 96
-    max_width: 640
+    audio_bitrate_mono_kbps: 160
+    audio_bitrate_stereo_kbps: 160
+    max_width: 320
     h264_profile: "baseline"
-    h264_level: "3.0"
+    h264_level: "1.3"
     preferred_audio_languages: ["eng"]
 
   live_action:
-    crf: 28
-    maxrate_floor_kbps: 350
-    maxrate_cap_kbps: 1500
+    crf: 30
+    video_bitrate_kbps: 500
+    maxrate_floor_kbps: 250
+    maxrate_cap_kbps: 768
+    bufsize_kbps: 1500
     bitrate_multiplier: 1.5
-    audio_bitrate_mono_kbps: 64
-    audio_bitrate_stereo_kbps: 96
-    max_width: 640
+    audio_bitrate_mono_kbps: 160
+    audio_bitrate_stereo_kbps: 160
+    max_width: 320
     h264_profile: "baseline"
-    h264_level: "3.0"
+    h264_level: "1.3"
     preferred_audio_languages: ["eng"]
 
   movie:
-    crf: 27
-    maxrate_floor_kbps: 400
-    maxrate_cap_kbps: 1500
+    crf: 30
+    video_bitrate_kbps: 500
+    maxrate_floor_kbps: 250
+    maxrate_cap_kbps: 768
+    bufsize_kbps: 1500
     bitrate_multiplier: 1.5
-    audio_bitrate_mono_kbps: 64
-    audio_bitrate_stereo_kbps: 96
-    max_width: 640
+    audio_bitrate_mono_kbps: 160
+    audio_bitrate_stereo_kbps: 160
+    max_width: 320
     h264_profile: "baseline"
-    h264_level: "3.0"
+    h264_level: "1.3"
     preferred_audio_languages: ["eng"]
 
 overrides:

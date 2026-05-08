@@ -24,14 +24,16 @@ def _audio_stream(index: int, language: str, channels: int, is_default: bool) ->
 def test_ffmpeg_command_contains_required_flags() -> None:
     profile = VideoProfile(
         crf=30,
+        video_bitrate_kbps=500,
         maxrate_floor_kbps=250,
-        maxrate_cap_kbps=1200,
+        maxrate_cap_kbps=768,
+        bufsize_kbps=1500,
         bitrate_multiplier=1.5,
-        audio_bitrate_mono_kbps=64,
-        audio_bitrate_stereo_kbps=96,
-        max_width=640,
+        audio_bitrate_mono_kbps=160,
+        audio_bitrate_stereo_kbps=160,
+        max_width=320,
         h264_profile="baseline",
-        h264_level="3.0",
+        h264_level="1.3",
     )
     probe = ProbeInfo(
         source_video_bitrate_kbps=3175,
@@ -52,16 +54,33 @@ def test_ffmpeg_command_contains_required_flags() -> None:
     fflags_index = cmd.index("-fflags")
     assert cmd[fflags_index + 1] == "+genpts"
     assert cmd.index("-fflags") < cmd.index("-i")
+    assert "-vf" in cmd
+    assert cmd[cmd.index("-vf") + 1] == (
+        "scale=320:240:force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1"
+    )
+    assert "-af" in cmd and cmd[cmd.index("-af") + 1] == "aresample=async=1:first_pts=0"
+    assert "-c:v" in cmd and cmd[cmd.index("-c:v") + 1] == "libx264"
     assert "-profile:v" in cmd and cmd[cmd.index("-profile:v") + 1] == "baseline"
-    assert "-level" in cmd and cmd[cmd.index("-level") + 1] == "3.0"
+    assert "-level:v" in cmd and cmd[cmd.index("-level:v") + 1] == "1.3"
+    assert "-preset" in cmd and cmd[cmd.index("-preset") + 1] == "medium"
+    assert "-b:v" in cmd and cmd[cmd.index("-b:v") + 1] == "500k"
+    assert "-maxrate" in cmd and cmd[cmd.index("-maxrate") + 1] == "768k"
+    assert "-bufsize" in cmd and cmd[cmd.index("-bufsize") + 1] == "1500k"
     assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
     assert "-x264-params" in cmd and cmd[cmd.index("-x264-params") + 1] == "ref=1:bframes=0:cabac=0"
-    assert "-crf" in cmd and cmd[cmd.index("-crf") + 1] == "30"
-    assert "-maxrate" in cmd
-    assert "-bufsize" in cmd
+    assert "-c:a" in cmd and cmd[cmd.index("-c:a") + 1] == "aac"
+    assert "-b:a" in cmd and cmd[cmd.index("-b:a") + 1] == "160k"
+    assert "-ac" in cmd and cmd[cmd.index("-ac") + 1] == "2"
     assert "-movflags" in cmd and cmd[cmd.index("-movflags") + 1] == "+faststart"
     assert "-sn" in cmd
     assert "-dn" in cmd
+    assert "-crf" not in cmd
+    assert "-ar" not in cmd
+    assert "-r" not in cmd
+    assert "-level" not in cmd
+    assert "3.0" not in cmd
+    assert "96k" not in cmd
+    assert "scale='min(640,iw)':-2" not in cmd
 
 
 def test_ffmpeg_command_uses_selected_audio_stream_map() -> None:

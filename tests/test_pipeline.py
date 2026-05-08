@@ -81,14 +81,16 @@ def test_process_media_items_handles_batch(
     ) -> ConversionPlan:
         del source_path, profile, probe
         return ConversionPlan(
-            command=["ffmpeg", "-crf", "30", str(tmp_output_path)],
+            command=["ffmpeg", "-b:v", "500k", str(tmp_output_path)],
             source_video_bitrate_kbps=1000,
             selected_audio_index=1,
             selected_audio_language="eng",
-            maxrate_kbps=1200,
+            video_bitrate_kbps=500,
+            maxrate_kbps=768,
+            bufsize_kbps=1500,
             audio_channels=2,
-            audio_bitrate_kbps=96,
-            filter_expr="scale='min(640,iw)':-2",
+            audio_bitrate_kbps=160,
+            filter_expr="scale=320:240:force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1",
         )
 
     monkeypatch.setattr("walkmarr.process.build_ffmpeg_command", _fake_build_ffmpeg)

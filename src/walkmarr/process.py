@@ -938,7 +938,7 @@ def _print_conversion_plan(
             console.print(f"  Release date: {metadata['release_date']}")
 
     console.print(f"  Profile: {media_item.profile_name}")
-    console.print(f"  CRF: {plan.command[plan.command.index('-crf') + 1]}")
+    console.print(f"  Video bitrate: {plan.video_bitrate_kbps}k")
     source_vbit = plan.source_video_bitrate_kbps
     vbit_display = f"{source_vbit} kbps" if source_vbit is not None else "unknown"
     console.print(f"  Source vbit: {vbit_display}")

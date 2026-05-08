@@ -32,7 +32,9 @@ class ConversionPlan:
     source_video_bitrate_kbps: int | None
     selected_audio_index: int
     selected_audio_language: str | None
+    video_bitrate_kbps: int
     maxrate_kbps: int
+    bufsize_kbps: int
     audio_channels: int
     audio_bitrate_kbps: int
     filter_expr: str
@@ -137,7 +139,7 @@ def build_ffmpeg_command(
     ffmpeg_bin: str = "ffmpeg",
 ) -> ConversionPlan:
     """Build ffmpeg command for Walkmarr conversion."""
-    maxrate_kbps = calculate_maxrate_kbps(probe.source_video_bitrate_kbps, profile)
+    maxrate_kbps = profile.maxrate_cap_kbps
 
     selected_audio = select_audio_stream(
         probe.audio_streams,
@@ -146,15 +148,10 @@ def build_ffmpeg_command(
     if selected_audio is None:
         raise ConversionError(f"No audio streams found in source media: {source_path}")
 
-    source_channels = selected_audio.channels if selected_audio.channels is not None else 2
-    if source_channels <= 1:
-        audio_channels = 1
-        audio_bitrate_kbps = profile.audio_bitrate_mono_kbps
-    else:
-        audio_channels = 2
-        audio_bitrate_kbps = profile.audio_bitrate_stereo_kbps
+    audio_channels = 2
+    audio_bitrate_kbps = profile.audio_bitrate_stereo_kbps
 
-    filter_expr = f"scale='min({profile.max_width},iw)':-2"
+    filter_expr = "scale=320:240:force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1"
 
     command = [
         ffmpeg_bin,
@@ -171,30 +168,32 @@ def build_ffmpeg_command(
         "-dn",
         "-vf",
         filter_expr,
+        "-af",
+        "aresample=async=1:first_pts=0",
         "-c:v",
         "libx264",
         "-profile:v",
         profile.h264_profile,
-        "-level",
+        "-level:v",
         profile.h264_level,
+        "-preset",
+        "medium",
+        "-b:v",
+        f"{profile.video_bitrate_kbps}k",
         "-pix_fmt",
         "yuv420p",
         "-x264-params",
         "ref=1:bframes=0:cabac=0",
-        "-crf",
-        str(profile.crf),
         "-maxrate",
         f"{maxrate_kbps}k",
         "-bufsize",
-        f"{maxrate_kbps * 2}k",
+        f"{profile.bufsize_kbps}k",
         "-c:a",
         "aac",
         "-b:a",
         f"{audio_bitrate_kbps}k",
         "-ac",
         str(audio_channels),
-        "-ar",
-        "48000",
         "-movflags",
         "+faststart",
         str(tmp_output_path),
@@ -205,7 +204,9 @@ def build_ffmpeg_command(
         source_video_bitrate_kbps=probe.source_video_bitrate_kbps,
         selected_audio_index=selected_audio.index,
         selected_audio_language=selected_audio.language_normalized,
+        video_bitrate_kbps=profile.video_bitrate_kbps,
         maxrate_kbps=maxrate_kbps,
+        bufsize_kbps=profile.bufsize_kbps,
         audio_channels=audio_channels,
         audio_bitrate_kbps=audio_bitrate_kbps,
         filter_expr=filter_expr,
