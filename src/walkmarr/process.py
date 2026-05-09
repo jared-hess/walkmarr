@@ -21,7 +21,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn, 
 from walkmarr.config import sonarr_specials_show_name
 from walkmarr.convert.video import (
     ConversionPlan,
-    build_ffmpeg_command,
+    build_ipod_conversion_plan,
     probe_media,
     require_binary,
     run_ffmpeg,
@@ -112,6 +112,12 @@ def ensure_required_tools() -> str:
     """Ensure required binaries are present and return AtomicParsley name."""
     require_binary("ffmpeg")
     require_binary("ffprobe")
+    if shutil.which("fdkaac") is None:
+        raise ConversionError(
+            "fdkaac is required for the default Linux iPod encode path.\n\n"
+            "Install it with:\n"
+            "  sudo apt install fdkaac"
+        )
     return detect_atomicparsley_binary()
 
 
@@ -479,13 +485,13 @@ def _process_prepared_media_item(
         item=media_item,
     )
     probe = probe_media(prepared.probe_source_path)
-    tmp_output = final_output.with_name(f"{final_output.stem}.tmp.mp4")
-    ffmpeg_plan = build_ffmpeg_command(
+    conversion_plan = build_ipod_conversion_plan(
         source_path=prepared.processing_source_path,
-        tmp_output_path=tmp_output,
+        staging_directory=config.staging_directory,
         profile=profile,
         probe=probe,
     )
+    tmp_output = conversion_plan.tmp_output_path
 
     LOGGER.info(
         "Processing item provider=%s source=%s mapped=%s staged=%s temp_output=%s final_output=%s",
@@ -496,7 +502,9 @@ def _process_prepared_media_item(
         tmp_output,
         final_output,
     )
-    LOGGER.info("ffmpeg command: %s", shlex.join(ffmpeg_plan.command))
+    LOGGER.info("audio wav command: %s", shlex.join(conversion_plan.audio_wav_command))
+    LOGGER.info("fdkaac command: %s", shlex.join(conversion_plan.fdkaac_command))
+    LOGGER.info("video mux command: %s", shlex.join(conversion_plan.video_mux_command))
     tag_command, metadata = _build_tag_command(
         config=config,
         media_item=media_item,
@@ -510,7 +518,7 @@ def _process_prepared_media_item(
         media_item=media_item,
         provider_name=provider_name,
         metadata=metadata,
-        ffmpeg_plan=ffmpeg_plan,
+        conversion_plan=conversion_plan,
         tag_command=tag_command,
         staging_applied=prepared.staging_applied,
         staging_path=prepared.processing_source_path if prepared.staging_applied else None,
@@ -531,6 +539,7 @@ def _process_prepared_media_item(
         return ProcessResult(status="dry-run", output_path=final_output)
 
     final_output.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output.parent.mkdir(parents=True, exist_ok=True)
     if tmp_output.exists():
         tmp_output.unlink()
 
@@ -547,7 +556,9 @@ def _process_prepared_media_item(
             current_stage="converting",
             item=media_item,
         )
-        _run_ffmpeg_with_cancellation(ffmpeg_plan.command, cancellation_token)
+        _run_ffmpeg_with_cancellation(conversion_plan.audio_wav_command, cancellation_token)
+        _run_command_with_cancellation(conversion_plan.fdkaac_command, "fdkaac", cancellation_token)
+        _run_ffmpeg_with_cancellation(conversion_plan.video_mux_command, cancellation_token)
         validation = validate_encoded_output(prepared.processing_source_path, tmp_output)
         LOGGER.info(
             "Validation passed source=%.2fs output=%.2fs shortfall=%.2fs overage=%.2fs size=%s min_size=%s",
@@ -591,7 +602,10 @@ def _process_prepared_media_item(
         console.print(f"  Output duration: {post_tag_validation.output_duration_seconds:.2f}s")
         console.print(f"  Allowed shortfall: {post_tag_validation.allowed_shortfall_seconds:.2f}s")
         console.print(f"  Allowed overage: {post_tag_validation.allowed_overage_seconds:.2f}s")
-        tmp_output.replace(final_output)
+        _promote_temp_output(tmp_output, final_output)
+        for tmp_intermediate in [conversion_plan.tmp_audio_wav_path, conversion_plan.tmp_audio_m4a_path]:
+            if tmp_intermediate.exists():
+                tmp_intermediate.unlink()
         _emit_progress(
             progress_callback,
             level="success",
@@ -604,10 +618,22 @@ def _process_prepared_media_item(
             item=media_item,
         )
     except (ConversionError, TaggingError, OSError) as exc:
-        if tmp_output.exists():
-            console.print(f"Removing failed temp output: {tmp_output}")
-            LOGGER.error("Removing failed temp output: %s", tmp_output)
-            tmp_output.unlink()
+        if config.keep_failed_temps:
+            LOGGER.info("Keeping failed temp files because keep_failed_temps is enabled")
+        else:
+            if tmp_output.exists():
+                console.print(f"Removing failed temp output: {tmp_output}")
+                LOGGER.error("Removing failed temp output: %s", tmp_output)
+                tmp_output.unlink()
+            for tmp_intermediate in [conversion_plan.tmp_audio_wav_path, conversion_plan.tmp_audio_m4a_path]:
+                if tmp_intermediate.exists():
+                    tmp_intermediate.unlink()
+        LOGGER.error(
+            "Failed temp paths: wav=%s m4a=%s mp4=%s",
+            conversion_plan.tmp_audio_wav_path,
+            conversion_plan.tmp_audio_m4a_path,
+            tmp_output,
+        )
         LOGGER.error("Processing failed for %s: %s", media_item.source_path, exc)
         stage = "canceled" if _is_cancellation_error(exc) else "failed"
         level = "warning" if stage == "canceled" else "error"
@@ -625,6 +651,24 @@ def _process_prepared_media_item(
         raise WalkmarrError(f"Failed processing '{media_item.source_path}': {exc}") from exc
 
     return ProcessResult(status="converted", output_path=final_output)
+
+
+def _promote_temp_output(tmp_output: Path, final_output: Path) -> None:
+    """Copy validated output to the destination filesystem before final replace."""
+    digest = hashlib.sha1(str(tmp_output).encode("utf-8")).hexdigest()[:12]
+    promote_output = final_output.with_name(f".{final_output.name}.{digest}.promote-tmp")
+    if promote_output.exists():
+        promote_output.unlink()
+
+    try:
+        _ = shutil.copy2(tmp_output, promote_output)
+        _ = promote_output.replace(final_output)
+    except OSError:
+        if promote_output.exists():
+            promote_output.unlink()
+        raise
+
+    tmp_output.unlink()
 
 
 def _cleanup_staged_file(prepared: PreparedMediaItem) -> None:
@@ -691,6 +735,17 @@ def _run_ffmpeg_with_cancellation(
         run_ffmpeg(command)
         return
     _run_subprocess_cancellable(command, "ffmpeg", cancellation_token)
+
+
+def _run_command_with_cancellation(
+    command: list[str],
+    label: str,
+    cancellation_token: CancellationToken | None,
+) -> None:
+    if cancellation_token is None:
+        subprocess.run(command, check=True)
+        return
+    _run_subprocess_cancellable(command, label, cancellation_token)
 
 
 def _run_atomicparsley_with_cancellation(
@@ -908,12 +963,12 @@ def _print_conversion_plan(
     media_item: MediaItem,
     provider_name: str,
     metadata: dict[str, str | int | None],
-    ffmpeg_plan: ConversionPlan,
+    conversion_plan: ConversionPlan,
     tag_command: list[str],
     staging_applied: bool,
     staging_path: Path | None,
 ) -> None:
-    plan = ffmpeg_plan
+    plan = conversion_plan
     source_label = media_item.remote_source_path or str(media_item.source_path)
 
     console.print("Converting:")
@@ -948,7 +1003,9 @@ def _print_conversion_plan(
     console.print(f"  Audio: {plan.audio_channels}ch @ {plan.audio_bitrate_kbps}k")
     console.print(f"  Filter: {plan.filter_expr}")
     console.print(f"  Metadata: {metadata}")
-    console.print(f"  ffmpeg command: {shlex.join(plan.command)}")
+    console.print(f"  audio wav command: {shlex.join(plan.audio_wav_command)}")
+    console.print(f"  fdkaac command: {shlex.join(plan.fdkaac_command)}")
+    console.print(f"  video mux command: {shlex.join(plan.video_mux_command)}")
     console.print(f"  AtomicParsley command: {shlex.join(tag_command)}")
 
 
