@@ -40,6 +40,7 @@ def default_bootstrap_payload() -> dict[str, Any]:
         ],
         "output_roots": {"shows": "/mnt/walkmarr/shows", "movies": "/mnt/walkmarr/movies"},
         "staging": {"mode": "auto", "directory": "/tmp/walkmarr-staging"},
+        "debug": {"keep_failed_temps": False},
         "queue": {
             "workers": 1,
             "continue_on_error": True,
@@ -378,6 +379,11 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
         queue_raw.get("remember_completed_until_exit", True)
     )
 
+    debug_raw = payload.get("debug", {})
+    if not isinstance(debug_raw, dict):
+        raise ConfigError("debug must be a mapping")
+    keep_failed_temps = bool(debug_raw.get("keep_failed_temps", False))
+
     genre_profile_map = _parse_genre_profile_map(payload)
 
     app_config = AppConfig(
@@ -396,6 +402,7 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
         queue_start_paused=queue_start_paused,
         queue_default_mode=cast(Literal["missing_only", "overwrite"], queue_default_mode),
         queue_remember_completed_until_exit=queue_remember_completed_until_exit,
+        keep_failed_temps=keep_failed_temps,
     )
 
     _validate_profiles_exist(app_config)

@@ -95,6 +95,7 @@ class AppConfig:
     queue_start_paused: bool = False
     queue_default_mode: Literal["missing_only", "overwrite"] = "missing_only"
     queue_remember_completed_until_exit: bool = True
+    keep_failed_temps: bool = False
 
 
 class QueueItemStatus(Enum):

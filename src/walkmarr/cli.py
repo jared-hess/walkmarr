@@ -220,6 +220,11 @@ def tui(runtime: RuntimeContext) -> None:
     help="Skip existing outputs (default behavior).",
 )
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output files.")
+@click.option(
+    "--keep-temp",
+    is_flag=True,
+    help="Keep failed conversion temp files for debugging.",
+)
 @click.pass_obj
 def sonarr_convert(
     runtime: RuntimeContext,
@@ -228,12 +233,15 @@ def sonarr_convert(
     staging_mode: str | None,
     missing_only: bool,
     overwrite: bool,
+    keep_temp: bool,
 ) -> None:
     """Convert a Sonarr series to portable MP4 outputs."""
     del missing_only
     try:
         app_config = _get_config(runtime)
         effective_config = _apply_staging_mode_override(app_config, staging_mode)
+        if keep_temp:
+            effective_config = replace(effective_config, keep_failed_temps=True)
         atomicparsley_bin = ensure_required_tools()
 
         provider = SonarrProvider(
@@ -327,6 +335,11 @@ def radarr_list(runtime: RuntimeContext) -> None:
     help="Skip existing outputs (default behavior).",
 )
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output files.")
+@click.option(
+    "--keep-temp",
+    is_flag=True,
+    help="Keep failed conversion temp files for debugging.",
+)
 @click.pass_obj
 def radarr_convert(
     runtime: RuntimeContext,
@@ -335,12 +348,15 @@ def radarr_convert(
     staging_mode: str | None,
     missing_only: bool,
     overwrite: bool,
+    keep_temp: bool,
 ) -> None:
     """Convert a Radarr movie to portable MP4 output."""
     del missing_only
     try:
         app_config = _get_config(runtime)
         effective_config = _apply_staging_mode_override(app_config, staging_mode)
+        if keep_temp:
+            effective_config = replace(effective_config, keep_failed_temps=True)
         atomicparsley_bin = ensure_required_tools()
 
         provider = RadarrProvider(
