@@ -28,13 +28,14 @@ mirror libraries, starting with iPod Classic-compatible video exports.
 - System binaries:
   - `ffmpeg`
   - `ffprobe`
+  - `fdkaac`
   - `AtomicParsley` (or `atomicparsley`)
 
 Install required system binaries:
 
 ```bash
 sudo apt update
-sudo apt install ffmpeg atomicparsley
+sudo apt install ffmpeg fdkaac atomicparsley
 ```
 
 ## Install with uv
@@ -150,6 +151,25 @@ Dry-run never writes files or creates directories. It prints:
 - metadata to be written
 - ffmpeg command
 - AtomicParsley command
+
+## Debugging failed conversions
+
+When a conversion fails, Walkmarr deletes any partial temp files (WAV, M4A,
+partial MP4) by default. To keep them for inspection, set this in your config:
+
+```yaml
+debug:
+  keep_failed_temps: true
+```
+
+Or pass `--keep-temp` on the CLI:
+
+```bash
+uv run walkmarr sonarr convert "Futurama" --keep-temp
+```
+
+Only files from failed conversions are kept. Successful outputs follow the
+normal write-then-rename flow and are not affected by this flag.
 
 ## Safety notes
 
