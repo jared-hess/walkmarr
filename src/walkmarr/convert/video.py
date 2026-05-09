@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import shutil
@@ -26,9 +27,12 @@ class ProbeInfo:
 
 @dataclass(frozen=True)
 class ConversionPlan:
-    """Built ffmpeg command and computed encoding values."""
-
-    command: list[str]
+    audio_wav_command: list[str]
+    fdkaac_command: list[str]
+    video_mux_command: list[str]
+    tmp_audio_wav_path: Path
+    tmp_audio_m4a_path: Path
+    tmp_output_path: Path
     source_video_bitrate_kbps: int | None
     selected_audio_index: int
     selected_audio_language: str | None
@@ -131,14 +135,14 @@ def calculate_maxrate_kbps(
     return max(profile.maxrate_floor_kbps, min(profile.maxrate_cap_kbps, candidate))
 
 
-def build_ffmpeg_command(
+def build_ipod_conversion_plan(
     source_path: Path,
-    tmp_output_path: Path,
+    staging_directory: Path,
     profile: VideoProfile,
     probe: ProbeInfo,
     ffmpeg_bin: str = "ffmpeg",
+    fdkaac_bin: str = "fdkaac",
 ) -> ConversionPlan:
-    """Build ffmpeg command for Walkmarr conversion."""
     maxrate_kbps = profile.maxrate_cap_kbps
 
     selected_audio = select_audio_stream(
@@ -150,57 +154,61 @@ def build_ffmpeg_command(
 
     audio_channels = 2
     audio_bitrate_kbps = profile.audio_bitrate_stereo_kbps
-
     filter_expr = "scale=320:240:force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1"
 
-    command = [
-        ffmpeg_bin,
-        "-y",
-        "-fflags",
-        "+genpts",
-        "-i",
-        str(source_path),
-        "-map",
-        "0:v:0",
-        "-map",
-        f"0:{selected_audio.index}",
-        "-sn",
-        "-dn",
-        "-vf",
-        filter_expr,
-        "-af",
-        "aresample=async=1:first_pts=0",
-        "-c:v",
-        "libx264",
-        "-profile:v",
-        profile.h264_profile,
-        "-level:v",
-        profile.h264_level,
-        "-preset",
-        "medium",
-        "-b:v",
-        f"{profile.video_bitrate_kbps}k",
-        "-pix_fmt",
-        "yuv420p",
-        "-x264-params",
-        "ref=1:bframes=0:cabac=0",
-        "-maxrate",
-        f"{maxrate_kbps}k",
-        "-bufsize",
-        f"{profile.bufsize_kbps}k",
-        "-c:a",
-        "aac",
-        "-b:a",
-        f"{audio_bitrate_kbps}k",
-        "-ac",
-        str(audio_channels),
-        "-movflags",
-        "+faststart",
+    digest = hashlib.sha1(str(source_path).encode()).hexdigest()[:12]
+    stem = source_path.stem
+    tmp_audio_wav_path = staging_directory / f"{stem}.{digest}.audio.wav"
+    tmp_audio_m4a_path = staging_directory / f"{stem}.{digest}.audio.m4a"
+    tmp_output_path = staging_directory / f"{stem}.{digest}.tmp.mp4"
+
+    audio_wav_command = [
+        ffmpeg_bin, "-y", "-fflags", "+genpts",
+        "-i", str(source_path),
+        "-map", "0:a:0",
+        "-vn",
+        "-af", "aresample=async=1:first_pts=0",
+        "-ac", "2",
+        "-ar", "44100",
+        "-c:a", "pcm_s16le",
+        str(tmp_audio_wav_path),
+    ]
+
+    fdkaac_command = [
+        fdkaac_bin, "-b", "160",
+        "-o", str(tmp_audio_m4a_path),
+        str(tmp_audio_wav_path),
+    ]
+
+    video_mux_command = [
+        ffmpeg_bin, "-y", "-fflags", "+genpts",
+        "-i", str(source_path),
+        "-i", str(tmp_audio_m4a_path),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-sn", "-dn",
+        "-vf", filter_expr,
+        "-c:v", "libx264",
+        "-profile:v", profile.h264_profile,
+        "-level:v", profile.h264_level,
+        "-preset", "medium",
+        "-b:v", f"{profile.video_bitrate_kbps}k",
+        "-maxrate", f"{maxrate_kbps}k",
+        "-bufsize", f"{profile.bufsize_kbps}k",
+        "-pix_fmt", "yuv420p",
+        "-x264-params", "ref=1:bframes=0:cabac=0",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
         str(tmp_output_path),
     ]
 
     return ConversionPlan(
-        command=command,
+        audio_wav_command=audio_wav_command,
+        fdkaac_command=fdkaac_command,
+        video_mux_command=video_mux_command,
+        tmp_audio_wav_path=tmp_audio_wav_path,
+        tmp_audio_m4a_path=tmp_audio_m4a_path,
+        tmp_output_path=tmp_output_path,
         source_video_bitrate_kbps=probe.source_video_bitrate_kbps,
         selected_audio_index=selected_audio.index,
         selected_audio_language=selected_audio.language_normalized,
@@ -211,6 +219,7 @@ def build_ffmpeg_command(
         audio_bitrate_kbps=audio_bitrate_kbps,
         filter_expr=filter_expr,
     )
+
 
 
 def probe_duration_seconds(path: Path, ffprobe_bin: str = "ffprobe") -> float:
