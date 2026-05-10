@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import errno
+from importlib import import_module
 import logging
 import queue
 import shutil
@@ -13,8 +14,10 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal, TextIO, cast
+from typing import Any, Callable, Literal, TextIO, cast
+from urllib.parse import urlparse
 
+import requests
 from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 
@@ -39,6 +42,7 @@ from walkmarr.tag.mp4 import (
 
 LOGGER = logging.getLogger("walkmarr")
 MAX_CAPTURED_SUBPROCESS_LINES = 400
+itunes = cast(Any, import_module("walkmarr.artwork.itunes"))
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,15 @@ class ProgressEvent:
         "canceled",
     ] | None = None
     item: MediaItem | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedTagArtwork:
+    """Artwork selected for tagging plus temp files owned by the conversion."""
+
+    artwork_path: Path | None
+    temp_raw_path: Path | None = None
+    temp_artwork_path: Path | None = None
 
 
 class CancellationToken:
@@ -182,6 +195,7 @@ def process_media_items(
     cancellation_token: CancellationToken | None = None,
     queue_item_id: str | None = None,
     continue_on_error: bool = False,
+    pause_callback: Callable[[], None] | None = None,
 ) -> BatchProcessResult:
     """Process a list of media items with stage/convert overlap."""
     if dry_run or len(media_items) <= 1:
@@ -190,6 +204,8 @@ def process_media_items(
         failed = 0
         total = len(media_items)
         for idx, item in enumerate(media_items, start=1):
+            if pause_callback is not None:
+                pause_callback()
             if cancellation_token is not None and cancellation_token.is_canceled:
                 _emit_progress(
                     progress_callback,
@@ -252,6 +268,8 @@ def process_media_items(
     def stage_worker() -> None:
         try:
             for item in media_items:
+                if pause_callback is not None:
+                    pause_callback()
                 if stop_event.is_set():
                     break
                 if cancellation_token is not None and cancellation_token.is_canceled:
@@ -285,6 +303,8 @@ def process_media_items(
 
             prepared = queued
             try:
+                if pause_callback is not None:
+                    pause_callback()
                 if prepared.skip_only:
                     with result_lock:
                         counts["skipped"] += 1
@@ -505,26 +525,26 @@ def _process_prepared_media_item(
     LOGGER.info("audio wav command: %s", shlex.join(conversion_plan.audio_wav_command))
     LOGGER.info("fdkaac command: %s", shlex.join(conversion_plan.fdkaac_command))
     LOGGER.info("video mux command: %s", shlex.join(conversion_plan.video_mux_command))
-    tag_command, metadata = _build_tag_command(
-        config=config,
-        media_item=media_item,
-        atomicparsley_bin=atomicparsley_bin,
-        media_path=tmp_output,
-    )
-    LOGGER.info("tag command: %s", shlex.join(tag_command))
-
-    _print_conversion_plan(
-        console=console,
-        media_item=media_item,
-        provider_name=provider_name,
-        metadata=metadata,
-        conversion_plan=conversion_plan,
-        tag_command=tag_command,
-        staging_applied=prepared.staging_applied,
-        staging_path=prepared.processing_source_path if prepared.staging_applied else None,
-    )
-
     if dry_run:
+        tag_command, metadata = _build_tag_command(
+            config=config,
+            media_item=media_item,
+            atomicparsley_bin=atomicparsley_bin,
+            media_path=tmp_output,
+            artwork_path=None,
+        )
+        LOGGER.info("tag command: %s", shlex.join(tag_command))
+        _print_conversion_plan(
+            console=console,
+            media_item=media_item,
+            provider_name=provider_name,
+            metadata=metadata,
+            conversion_plan=conversion_plan,
+            tag_command=tag_command,
+            staging_applied=prepared.staging_applied,
+            staging_path=prepared.processing_source_path if prepared.staging_applied else None,
+            artwork_priority=_intended_artwork_priority(media_item, provider_name),
+        )
         _emit_progress(
             progress_callback,
             level="info",
@@ -538,12 +558,42 @@ def _process_prepared_media_item(
         )
         return ProcessResult(status="dry-run", output_path=final_output)
 
+    resolved_artwork = ResolvedTagArtwork(artwork_path=None)
+    artwork_raw_path: Path | None = None
+    artwork_path: Path | None = None
     final_output.parent.mkdir(parents=True, exist_ok=True)
     tmp_output.parent.mkdir(parents=True, exist_ok=True)
     if tmp_output.exists():
         tmp_output.unlink()
 
     try:
+        resolved_artwork = _resolve_tag_artwork(
+            config=config,
+            media_item=media_item,
+            provider_name=provider_name,
+            cancellation_token=cancellation_token,
+        )
+        artwork_raw_path = resolved_artwork.temp_raw_path
+        artwork_path = resolved_artwork.temp_artwork_path
+        tag_command, metadata = _build_tag_command(
+            config=config,
+            media_item=media_item,
+            atomicparsley_bin=atomicparsley_bin,
+            media_path=tmp_output,
+            artwork_path=resolved_artwork.artwork_path,
+        )
+        LOGGER.info("tag command: %s", shlex.join(tag_command))
+        _print_conversion_plan(
+            console=console,
+            media_item=media_item,
+            provider_name=provider_name,
+            metadata=metadata,
+            conversion_plan=conversion_plan,
+            tag_command=tag_command,
+            staging_applied=prepared.staging_applied,
+            staging_path=prepared.processing_source_path if prepared.staging_applied else None,
+            artwork_priority=None,
+        )
         _ensure_not_canceled(cancellation_token)
         _emit_progress(
             progress_callback,
@@ -606,6 +656,10 @@ def _process_prepared_media_item(
         for tmp_intermediate in [conversion_plan.tmp_audio_wav_path, conversion_plan.tmp_audio_m4a_path]:
             if tmp_intermediate.exists():
                 tmp_intermediate.unlink()
+        if artwork_path is not None and artwork_path.exists():
+            artwork_path.unlink()
+        if artwork_raw_path is not None and artwork_raw_path.exists():
+            artwork_raw_path.unlink()
         _emit_progress(
             progress_callback,
             level="success",
@@ -628,11 +682,17 @@ def _process_prepared_media_item(
             for tmp_intermediate in [conversion_plan.tmp_audio_wav_path, conversion_plan.tmp_audio_m4a_path]:
                 if tmp_intermediate.exists():
                     tmp_intermediate.unlink()
+            if artwork_path is not None and artwork_path.exists():
+                artwork_path.unlink()
+            if artwork_raw_path is not None and artwork_raw_path.exists():
+                artwork_raw_path.unlink()
         LOGGER.error(
-            "Failed temp paths: wav=%s m4a=%s mp4=%s",
+            "Failed temp paths: wav=%s m4a=%s mp4=%s artwork_raw=%s artwork=%s",
             conversion_plan.tmp_audio_wav_path,
             conversion_plan.tmp_audio_m4a_path,
             tmp_output,
+            artwork_raw_path,
+            artwork_path,
         )
         LOGGER.error("Processing failed for %s: %s", media_item.source_path, exc)
         stage = "canceled" if _is_cancellation_error(exc) else "failed"
@@ -840,6 +900,165 @@ def _stream_subprocess_output(
         stream.close()
 
 
+def _artwork_raw_temp_path(staging_directory: Path, artwork_url: str | None) -> Path | None:
+    if artwork_url is None:
+        return None
+    digest = hashlib.sha1(artwork_url.encode("utf-8")).hexdigest()[:12]
+    suffix = Path(urlparse(artwork_url).path).suffix.casefold()
+    if suffix not in {".jpg", ".jpeg", ".png"}:
+        suffix = ".jpg"
+    return staging_directory / f"artwork.{digest}.raw{suffix}"
+
+
+def _artwork_jpeg_temp_path(staging_directory: Path, artwork_url: str | None) -> Path | None:
+    if artwork_url is None:
+        return None
+    digest = hashlib.sha1(artwork_url.encode("utf-8")).hexdigest()[:12]
+    return staging_directory / f"artwork.{digest}.320x320.jpg"
+
+
+def _itunes_artwork_temp_path(
+    staging_directory: Path,
+    *,
+    series_id: int | str | None,
+    season_number: int | None,
+    image_size: int,
+) -> Path:
+    key = f"sonarr:{series_id}:season:{season_number}:itunes:{image_size}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+    return staging_directory / f"artwork.{digest}.itunes.{image_size}x{image_size}.jpg"
+
+
+def _intended_artwork_priority(media_item: MediaItem, provider_name: str) -> str | None:
+    if media_item.kind == "episode" and provider_name == "sonarr":
+        return "iTunes TV season artwork, then provider fallback artwork, then no artwork"
+    if media_item.artwork_url is not None:
+        return "provider fallback artwork, then no artwork"
+    return "no artwork"
+
+
+def _resolve_tag_artwork(
+    *,
+    config: AppConfig,
+    media_item: MediaItem,
+    provider_name: str,
+    cancellation_token: CancellationToken | None,
+) -> ResolvedTagArtwork:
+    fallback_enabled = _provider_fallback_artwork_enabled(config, provider_name)
+    fallback_raw_path = (
+        _artwork_raw_temp_path(config.staging_directory, media_item.artwork_url)
+        if fallback_enabled
+        else None
+    )
+    fallback_artwork_path = (
+        _artwork_jpeg_temp_path(config.staging_directory, media_item.artwork_url)
+        if fallback_enabled
+        else None
+    )
+
+    if config.artwork.enabled and media_item.kind == "episode" and provider_name == "sonarr":
+        provider_config = config.artwork.providers.get("itunes_tv_season")
+        image_size = provider_config.image_size if provider_config is not None else 320
+        itunes_artwork_path = _itunes_artwork_temp_path(
+            config.staging_directory,
+            series_id=media_item.provider_item_id,
+            season_number=media_item.season_number,
+            image_size=image_size,
+        )
+        resolution = itunes.resolve_itunes_tv_season_artwork(
+            config=config,
+            provider_kind=provider_name,
+            series_id=media_item.provider_item_id,
+            series_title=media_item.series_title,
+            season_number=media_item.season_number,
+            fallback_artwork=fallback_artwork_path,
+            staging_artwork_path=itunes_artwork_path,
+            dry_run=False,
+            download_artwork=_download_artwork,
+            normalize_artwork=_normalize_artwork,
+            cancellation_token=cancellation_token,
+        )
+        if resolution.source == "itunes" and resolution.artwork is not None:
+            return ResolvedTagArtwork(
+                artwork_path=Path(resolution.artwork),
+                temp_artwork_path=Path(resolution.artwork),
+            )
+
+    if media_item.artwork_url is None or fallback_raw_path is None or fallback_artwork_path is None:
+        return ResolvedTagArtwork(artwork_path=None)
+
+    try:
+        _download_artwork(media_item.artwork_url, fallback_raw_path)
+        _normalize_artwork(fallback_raw_path, fallback_artwork_path, cancellation_token)
+    except Exception as exc:  # noqa: BLE001 - provider fallback artwork is optional.
+        LOGGER.info(
+            "Provider fallback artwork unavailable for %s; tagging without artwork: %s",
+            media_item.artwork_url,
+            exc,
+        )
+        for temp_path in (fallback_artwork_path, fallback_raw_path):
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                LOGGER.info("Provider fallback artwork temp cleanup failed for %s: %s", temp_path, cleanup_exc)
+        return ResolvedTagArtwork(artwork_path=None)
+
+    return ResolvedTagArtwork(
+        artwork_path=fallback_artwork_path,
+        temp_raw_path=fallback_raw_path,
+        temp_artwork_path=fallback_artwork_path,
+    )
+
+
+def _provider_fallback_artwork_enabled(config: AppConfig, provider_name: str) -> bool:
+    if not config.artwork.enabled:
+        return False
+
+    itunes_config = config.artwork.providers.get("itunes_tv_season")
+    if itunes_config is None:
+        return True
+    if provider_name == "sonarr":
+        return itunes_config.sonarr_fallback.enabled
+    if provider_name == "radarr":
+        return itunes_config.radarr_fallback.enabled
+    return False
+
+
+def _download_artwork(artwork_url: str, artwork_path: Path) -> None:
+    artwork_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        response = requests.get(artwork_url, timeout=20.0)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise TaggingError(f"Artwork download failed for {artwork_url}: {exc}") from exc
+
+    if not response.content:
+        raise TaggingError(f"Artwork download returned empty content for {artwork_url}")
+    artwork_path.write_bytes(response.content)
+
+
+def _normalize_artwork(
+    artwork_raw_path: Path,
+    artwork_path: Path,
+    cancellation_token: CancellationToken | None,
+) -> None:
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(artwork_raw_path),
+        "-vf",
+        "scale=320:320:force_original_aspect_ratio=decrease,"
+        "pad=320:320:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1",
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        str(artwork_path),
+    ]
+    _run_ffmpeg_with_cancellation(command, cancellation_token)
+
+
 def _queue_put_with_stop(
     work_queue: queue.Queue[PreparedMediaItem | object],
     item: PreparedMediaItem,
@@ -861,6 +1080,7 @@ def _build_tag_command(
     media_item: MediaItem,
     atomicparsley_bin: str,
     media_path: Path,
+    artwork_path: Path | None = None,
 ) -> tuple[list[str], dict[str, str | int | None]]:
     if media_item.kind == "episode":
         if media_item.series_title is None:
@@ -891,6 +1111,7 @@ def _build_tag_command(
             year=tag_year,
             tv_episode_id=media_item.episode_id,
             genre=media_item.genre,
+            artwork_path=artwork_path,
         )
         metadata: dict[str, str | int | None] = {
             "kind": "TV Show",
@@ -904,6 +1125,7 @@ def _build_tag_command(
             "artist": tag_show_title,
             "album": tag_show_title,
             "genre": media_item.genre,
+            "artwork": str(artwork_path) if artwork_path is not None else None,
         }
         return command, metadata
 
@@ -916,6 +1138,7 @@ def _build_tag_command(
             movie_title=movie_title,
             year=tag_year,
             genre=media_item.genre,
+            artwork_path=artwork_path,
         )
         metadata = {
             "kind": "Movie",
@@ -925,6 +1148,7 @@ def _build_tag_command(
             "artist": movie_title,
             "album": movie_title,
             "genre": media_item.genre,
+            "artwork": str(artwork_path) if artwork_path is not None else None,
         }
         return command, metadata
 
@@ -967,6 +1191,7 @@ def _print_conversion_plan(
     tag_command: list[str],
     staging_applied: bool,
     staging_path: Path | None,
+    artwork_priority: str | None = None,
 ) -> None:
     plan = conversion_plan
     source_label = media_item.remote_source_path or str(media_item.source_path)
@@ -1002,6 +1227,8 @@ def _print_conversion_plan(
     console.print(f"  Audio stream: {plan.selected_audio_index} ({selected_language})")
     console.print(f"  Audio: {plan.audio_channels}ch @ {plan.audio_bitrate_kbps}k")
     console.print(f"  Filter: {plan.filter_expr}")
+    if artwork_priority is not None:
+        console.print(f"  Artwork priority: {artwork_priority}")
     console.print(f"  Metadata: {metadata}")
     console.print(f"  audio wav command: {shlex.join(plan.audio_wav_command)}")
     console.print(f"  fdkaac command: {shlex.join(plan.fdkaac_command)}")

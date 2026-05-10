@@ -57,7 +57,7 @@ def test_sonarr_convert_accepts_staging_mode_override(
         season_number=1,
         episode_number=1,
     )
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     monkeypatch.setattr("walkmarr.cli._get_config", lambda _runtime: config)
     monkeypatch.setattr("walkmarr.cli.ensure_required_tools", lambda: "AtomicParsley")
@@ -90,8 +90,12 @@ def test_sonarr_convert_accepts_staging_mode_override(
             self,
             **kwargs: object,
         ) -> list[MediaItem]:
-            del kwargs
+            captured["series_id"] = kwargs["series_id"]
             return [item]
+
+        def poster_url(self, series: dict[str, object]) -> str | None:
+            del series
+            return "https://image.example/show-poster.jpg"
 
     monkeypatch.setattr("walkmarr.cli.SonarrProvider", FakeSonarrProvider)
 
@@ -108,6 +112,7 @@ def test_sonarr_convert_accepts_staging_mode_override(
 
     assert result.exit_code == 0
     assert captured["staging_mode"] == "never"
+    assert captured["series_id"] == 1
 
 
 def test_radarr_convert_accepts_staging_mode_override(

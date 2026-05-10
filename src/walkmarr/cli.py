@@ -270,7 +270,9 @@ def sonarr_convert(
             profile_name=profile_name,
             path_mappings=app_config.path_mappings,
             output_root=app_config.output_roots["shows"],
+            series_id=selected_id,
             series_genre=_primary_genre(selected_series),
+            series_artwork_url=provider.poster_url(selected_series),
             allow_unmapped_existing_local=app_config.allow_unmapped_existing_local,
         )
         if not items:
