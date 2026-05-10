@@ -29,6 +29,22 @@ queue:
   default_mode: "missing_only"
   remember_completed_until_exit: true
 
+artwork:
+  enabled: true
+  providers:
+    itunes_tv_season:
+      enabled: true
+      apply_to:
+        - tv
+      country: "US"
+      image_size: 320
+      timeout_seconds: 10
+      minimum_confidence: "parsed"
+      sonarr_fallback:
+        enabled: true
+      radarr_fallback:
+        enabled: true
+
 default_profiles:
   sonarr: "live_action"
   radarr: "movie"

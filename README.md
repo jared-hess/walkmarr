@@ -10,6 +10,7 @@ mirror libraries, starting with iPod Classic-compatible video exports.
 - Maps provider paths to local paths (WSL/Docker-friendly mappings).
 - Converts to MP4 (H.264 + AAC) with profile-driven settings.
 - Tags MP4/M4V outputs with AtomicParsley for iTunes/iPod metadata.
+- Embeds artwork using a configured provider chain.
 - Never modifies source media files.
 
 ## What Walkmarr does not do
@@ -17,9 +18,57 @@ mirror libraries, starting with iPod Classic-compatible video exports.
 - No web app or daemon.
 - No automatic *arr hook scripts.
 - No Lidarr/music pipeline.
-- No artwork download/embed pipeline (beyond future optional extension).
 - No source/output cleanup automation.
 - No Plex/Jellyfin/Tdarr/FileFlows integration.
+
+## Artwork behavior
+
+Walkmarr uses `artwork.providers.itunes_tv_season` for TV artwork. It is enabled
+in defaults, applies to `tv` only, and has these defaults:
+
+```yaml
+artwork:
+  enabled: true
+  providers:
+    itunes_tv_season:
+      enabled: true
+      apply_to: [tv]
+      country: US
+      image_size: 320
+      timeout_seconds: 10
+      minimum_confidence: parsed
+      sonarr_fallback:
+        enabled: true
+      radarr_fallback:
+        enabled: true
+```
+
+For Sonarr episode conversions, the priority is:
+
+1. `itunes_tv_season` match for the series/season.
+2. Sonarr provider poster fallback.
+3. No artwork, conversion continues without a tag.
+
+Movies/Radarr conversions are excluded from `itunes_tv_season`.
+Radarr uses its own poster fallback only, and there is no iTunes TV or movie
+provider coverage for movie artwork.
+
+All downloaded iTunes and fallback artwork is normalized to padded `320x320` JPEG
+before tagging so it is iPod/iTunes compatible.
+
+Matching is conservative by default:
+
+- Exact normalized match on artist and normalized `Series Title Season N` has highest
+  priority.
+- Parsed season fallback only accepts matches with the same season number and the
+  same artist.
+- Querying does not trust response ordering.
+- Special/unrelated collections (such as specials/holidays/compilations/volumes)
+  are rejected.
+- Ambiguous matches fall back to the next source.
+
+Lookup and download failures are non-fatal. If `itunes_tv_season` cannot produce
+artwork, Walkmarr logs why and continues with fallback poster or no artwork.
 
 ## Requirements
 

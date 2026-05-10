@@ -10,7 +10,16 @@ from dotenv import load_dotenv
 import yaml
 
 from walkmarr.exceptions import ConfigError
-from walkmarr.models import AppConfig, GenreProfileRule, PathMapping, ProviderConfig, VideoProfile
+from walkmarr.models import (
+    AppConfig,
+    ArtworkConfig,
+    ArtworkProviderConfig,
+    ArtworkFallbackProviderConfig,
+    GenreProfileRule,
+    PathMapping,
+    ProviderConfig,
+    VideoProfile,
+)
 
 
 def config_search_paths() -> list[Path]:
@@ -47,6 +56,21 @@ def default_bootstrap_payload() -> dict[str, Any]:
             "start_paused": False,
             "default_mode": "missing_only",
             "remember_completed_until_exit": True,
+        },
+        "artwork": {
+            "enabled": True,
+            "providers": {
+                "itunes_tv_season": {
+                    "enabled": True,
+                    "apply_to": ["tv"],
+                    "country": "US",
+                    "image_size": 320,
+                    "timeout_seconds": 10,
+                    "minimum_confidence": "parsed",
+                    "sonarr_fallback": {"enabled": True},
+                    "radarr_fallback": {"enabled": True},
+                }
+            },
         },
         "default_profiles": {"sonarr": "live_action", "radarr": "movie"},
         "genre_profile_map": {
@@ -257,6 +281,184 @@ def _parse_genre_profile_map(payload: dict[str, Any]) -> dict[str, tuple[GenrePr
     return parsed
 
 
+_KNOWN_APPLY_TO = {"tv", "movie"}
+_KNOWN_CONFIDENCE = {"exact", "parsed"}
+
+
+def _parse_artwork_fallback_provider(
+    provider_name: str,
+    fallback_name: str,
+    raw: dict[str, Any],
+    *,
+    default: bool,
+) -> bool:
+    fallback_raw = raw.get(fallback_name, {"enabled": default})
+    if fallback_raw is None:
+        fallback_raw = {"enabled": default}
+    if not isinstance(fallback_raw, dict):
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.{fallback_name} must be a mapping"
+        )
+
+    enabled = fallback_raw.get("enabled", default)
+    if not isinstance(enabled, bool):
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.{fallback_name}.enabled must be a boolean"
+        )
+    return enabled
+
+
+def _parse_artwork_provider_config(
+    provider_name: str,
+    raw: dict[str, Any] | None,
+) -> ArtworkProviderConfig:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"artwork.providers.{provider_name} must be a mapping")
+
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"artwork.providers.{provider_name}.enabled must be a boolean")
+
+    apply_to_raw = raw.get("apply_to", ["tv"])
+    if not isinstance(apply_to_raw, list) or not apply_to_raw:
+        raise ConfigError(f"artwork.providers.{provider_name}.apply_to must be a non-empty list")
+    apply_to: list[Literal["tv", "movie"]] = []
+    for index, value in enumerate(apply_to_raw):
+        if not isinstance(value, str):
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.apply_to[{index}] must be a non-empty string"
+            )
+        target = value.casefold().strip()
+        if not target:
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.apply_to[{index}] must be a non-empty string"
+            )
+        if target not in _KNOWN_APPLY_TO:
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.apply_to[{index}] must be 'tv' or 'movie'"
+            )
+        if provider_name == "itunes_tv_season" and target != "tv":
+            raise ConfigError("itunes_tv_season.apply_to can only be 'tv'")
+        if target not in apply_to:
+            apply_to.append(cast(Literal["tv", "movie"], target))
+
+    country_raw = raw.get("country", "US")
+    if not isinstance(country_raw, str) or not country_raw.strip():
+        raise ConfigError(f"artwork.providers.{provider_name}.country must be a non-empty string")
+    country = country_raw.strip().upper()
+    if len(country) != 2 or not country.isalpha():
+        raise ConfigError(f"artwork.providers.{provider_name}.country must be a two-letter country code")
+
+    image_size_raw = raw.get("image_size", 320)
+    if not isinstance(image_size_raw, int) or isinstance(image_size_raw, bool) or image_size_raw <= 0:
+        raise ConfigError(f"artwork.providers.{provider_name}.image_size must be a positive integer")
+
+    timeout_seconds_raw = raw.get("timeout_seconds", 10)
+    if (
+        not isinstance(timeout_seconds_raw, int)
+        or isinstance(timeout_seconds_raw, bool)
+        or timeout_seconds_raw <= 0
+    ):
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.timeout_seconds must be a positive integer"
+        )
+
+    minimum_confidence_raw = raw.get("minimum_confidence", "parsed")
+    if not isinstance(minimum_confidence_raw, str) or not minimum_confidence_raw.strip():
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.minimum_confidence must be a non-empty string"
+        )
+    minimum_confidence = minimum_confidence_raw.strip().casefold()
+    if minimum_confidence not in _KNOWN_CONFIDENCE:
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.minimum_confidence must be one of: {', '.join(sorted(_KNOWN_CONFIDENCE))}"
+        )
+
+    fallback_providers_raw = raw.get("fallback_providers")
+    if fallback_providers_raw is None:
+        sonarr_fallback_enabled = _parse_artwork_fallback_provider(
+            provider_name,
+            "sonarr_fallback",
+            raw,
+            default=True,
+        )
+        radarr_fallback_enabled = _parse_artwork_fallback_provider(
+            provider_name,
+            "radarr_fallback",
+            raw,
+            default=True,
+        )
+    else:
+        if not isinstance(fallback_providers_raw, list) or not fallback_providers_raw:
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.fallback_providers must be a non-empty list"
+            )
+        fallback_providers: list[Literal["sonarr", "radarr"]] = []
+        for index, value in enumerate(fallback_providers_raw):
+            if not isinstance(value, str):
+                raise ConfigError(
+                    f"artwork.providers.{provider_name}.fallback_providers[{index}] must be 'sonarr' or 'radarr'"
+                )
+            provider = value.casefold().strip()
+            if provider not in {"sonarr", "radarr"}:
+                raise ConfigError(
+                    f"artwork.providers.{provider_name}.fallback_providers[{index}] must be 'sonarr' or 'radarr'"
+                )
+            if provider not in fallback_providers:
+                fallback_providers.append(cast(Literal["sonarr", "radarr"], provider))
+        if not fallback_providers:
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.fallback_providers must include at least one provider"
+            )
+        sonarr_fallback_enabled = "sonarr" in fallback_providers
+        radarr_fallback_enabled = "radarr" in fallback_providers
+
+    if not (sonarr_fallback_enabled or radarr_fallback_enabled):
+        raise ConfigError(
+            f"artwork.providers.{provider_name} must enable at least one fallback provider"
+        )
+
+    return ArtworkProviderConfig(
+        enabled=enabled,
+        apply_to=tuple(apply_to),
+        country=country,
+        image_size=image_size_raw,
+        timeout_seconds=timeout_seconds_raw,
+        minimum_confidence=cast(
+            Literal["exact", "parsed"],
+            minimum_confidence,
+        ),
+        sonarr_fallback=ArtworkFallbackProviderConfig(enabled=sonarr_fallback_enabled),
+        radarr_fallback=ArtworkFallbackProviderConfig(enabled=radarr_fallback_enabled),
+    )
+
+
+def _parse_artwork_config(payload: dict[str, Any]) -> ArtworkConfig:
+    raw = payload.get("artwork", {})
+    if not isinstance(raw, dict):
+        raise ConfigError("artwork must be a mapping")
+
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError("artwork.enabled must be a boolean")
+
+    providers_raw = raw.get("providers", {})
+    if providers_raw is None:
+        providers_raw = {}
+    if not isinstance(providers_raw, dict):
+        raise ConfigError("artwork.providers must be a mapping")
+
+    providers = {
+        "itunes_tv_season": _parse_artwork_provider_config(
+            "itunes_tv_season",
+            providers_raw.get("itunes_tv_season", {}),
+        )
+    }
+    return ArtworkConfig(enabled=enabled, providers=providers)
+
+
 def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
     """Load, parse, and validate Walkmarr config.
 
@@ -385,12 +587,16 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
     keep_failed_temps = bool(debug_raw.get("keep_failed_temps", False))
 
     genre_profile_map = _parse_genre_profile_map(payload)
+    artwork = _parse_artwork_config(payload)
 
     app_config = AppConfig(
         providers=providers,
         path_mappings=path_mappings,
         output_roots=output_roots,
-        default_profiles={"sonarr": str(default_profiles["sonarr"]), "radarr": str(default_profiles["radarr"] )},
+        default_profiles={
+            "sonarr": str(default_profiles["sonarr"]),
+            "radarr": str(default_profiles["radarr"]),
+        },
         profiles=profiles,
         overrides=overrides,
         genre_profile_map=genre_profile_map,
@@ -403,6 +609,7 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
         queue_default_mode=cast(Literal["missing_only", "overwrite"], queue_default_mode),
         queue_remember_completed_until_exit=queue_remember_completed_until_exit,
         keep_failed_temps=keep_failed_temps,
+        artwork=artwork,
     )
 
     _validate_profiles_exist(app_config)

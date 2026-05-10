@@ -400,3 +400,113 @@ debug:
     )
     _, config = load_config(cfg_path)
     assert config.keep_failed_temps is False
+
+
+def test_artwork_defaults_enable_itunes_tv_only(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "walkmarr.yml", _MINIMUM_VALID_CONFIG)
+    _, config = load_config(cfg_path)
+
+    assert config.artwork.enabled is True
+    itunes_provider = config.artwork.providers["itunes_tv_season"]
+    assert itunes_provider.enabled is True
+    assert itunes_provider.apply_to == ("tv",)
+    assert itunes_provider.country == "US"
+    assert itunes_provider.image_size == 320
+    assert itunes_provider.timeout_seconds == 10
+    assert not hasattr(itunes_provider, "cache_enabled")
+    assert not hasattr(itunes_provider, "cache_dir")
+    assert itunes_provider.minimum_confidence == "parsed"
+    assert itunes_provider.sonarr_fallback.enabled is True
+    assert itunes_provider.radarr_fallback.enabled is True
+
+
+def test_artwork_disable_provider_keeps_fallbacks_default(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        _MINIMUM_VALID_CONFIG
+        + """
+artwork:
+  providers:
+    itunes_tv_season:
+      enabled: false
+""",
+    )
+
+    _, config = load_config(cfg_path)
+    itunes_provider = config.artwork.providers["itunes_tv_season"]
+    assert itunes_provider.enabled is False
+    assert itunes_provider.sonarr_fallback.enabled is True
+    assert itunes_provider.radarr_fallback.enabled is True
+
+
+def test_artwork_minimum_confidence_allows_only_exact_or_parsed(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        _MINIMUM_VALID_CONFIG
+        + """
+artwork:
+  providers:
+    itunes_tv_season:
+      minimum_confidence: exact
+""",
+    )
+
+    _, config = load_config(cfg_path)
+    assert config.artwork.providers["itunes_tv_season"].minimum_confidence == "exact"
+
+
+def test_artwork_rejects_invalid_minimum_confidence(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        _MINIMUM_VALID_CONFIG
+        + """
+artwork:
+  providers:
+    itunes_tv_season:
+      minimum_confidence: medium
+""",
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match=r"artwork\.providers\.itunes_tv_season\.minimum_confidence must be one of: exact, parsed",
+    ):
+        load_config(cfg_path)
+
+
+def test_artwork_rejects_itunes_movie_apply_to(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        _MINIMUM_VALID_CONFIG
+        + """
+artwork:
+  providers:
+    itunes_tv_season:
+      apply_to:
+        - movie
+""",
+    )
+
+    with pytest.raises(ConfigError, match="itunes_tv_season.apply_to can only be 'tv'"):
+        load_config(cfg_path)
+
+
+def test_artwork_fallback_provider_flags_default_true(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        _MINIMUM_VALID_CONFIG
+        + """
+artwork:
+  providers:
+    itunes_tv_season:
+      sonarr_fallback:
+        enabled: false
+      radarr_fallback:
+        enabled: true
+""",
+    )
+
+    _, config = load_config(cfg_path)
+    itunes_provider = config.artwork.providers["itunes_tv_season"]
+    assert itunes_provider.sonarr_fallback.enabled is False
+    assert itunes_provider.radarr_fallback.enabled is True
