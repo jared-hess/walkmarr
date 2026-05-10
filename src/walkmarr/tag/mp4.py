@@ -28,6 +28,7 @@ def build_tv_tag_command(
     year: int | str | None = None,
     tv_episode_id: str | None = None,
     genre: str | None = None,
+    artwork_path: Path | None = None,
 ) -> list[str]:
     """Build AtomicParsley command for TV metadata tags."""
     episode_id = tv_episode_id or f"S{season_number:02d}E{episode_number:02d}"
@@ -55,6 +56,8 @@ def build_tv_tag_command(
         command.extend(["--year", str(year)])
     if genre is not None and genre.strip():
         command.extend(["--genre", genre.strip()])
+    if artwork_path is not None:
+        command.extend(["--artwork", str(artwork_path)])
     command.append("--overWrite")
     return command
 
@@ -66,6 +69,7 @@ def build_movie_tag_command(
     movie_title: str,
     year: int | None,
     genre: str | None = None,
+    artwork_path: Path | None = None,
 ) -> list[str]:
     """Build AtomicParsley command for movie metadata tags."""
     command: list[str] = [
@@ -80,6 +84,8 @@ def build_movie_tag_command(
         command.extend(["--year", str(year)])
     if genre is not None and genre.strip():
         command.extend(["--genre", genre.strip()])
+    if artwork_path is not None:
+        command.extend(["--artwork", str(artwork_path)])
     command.extend([
         "--artist",
         movie_title,
