@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import time
+import threading
 from collections.abc import Callable
 from io import StringIO
 from pathlib import Path
+from typing import Any, Literal, cast
 
 import pytest
 from rich.console import Console
@@ -49,6 +51,7 @@ class FakeSonarrProvider:
         self.get_series_by_id_calls = 0
         self.list_episodes_calls = 0
         self.list_episode_files_calls = 0
+        self.build_media_items_kwargs: dict[str, object] | None = None
 
     def list_series(self) -> list[dict[str, object]]:
         return [{"id": 1, "title": "Futurama"}]
@@ -68,6 +71,7 @@ class FakeSonarrProvider:
         return []
 
     def build_media_items(self, **kwargs: object) -> list[MediaItem]:
+        self.build_media_items_kwargs = kwargs
         output_root = kwargs["output_root"]
         assert isinstance(output_root, Path)
         return [
@@ -82,6 +86,10 @@ class FakeSonarrProvider:
                 episode_number=1,
             )
         ]
+
+    def poster_url(self, series: dict[str, object]) -> str | None:
+        del series
+        return "https://image.example/series-poster.jpg"
 
 
 class FakeRadarrProvider:
@@ -130,8 +138,8 @@ def test_queue_manager_prevents_duplicate_pending(
     monkeypatch.setattr("walkmarr.queue_manager.ensure_required_tools", lambda: "AtomicParsley")
     manager = QueueManager(
         config=_config(tmp_path),
-        sonarr_provider=FakeSonarrProvider(),
-        radarr_provider=FakeRadarrProvider(),
+        sonarr_provider=cast(Any, FakeSonarrProvider()),
+        radarr_provider=cast(Any, FakeRadarrProvider()),
         console=Console(file=StringIO(), force_terminal=False, color_system=None),
     )
     first_id = manager.add_item(
@@ -150,9 +158,14 @@ def test_queue_manager_processes_fifo_and_accepts_new_items_while_running(
     monkeypatch.setattr("walkmarr.queue_manager.ensure_required_tools", lambda: "AtomicParsley")
 
     def _fake_process_media_items(**kwargs: object) -> BatchProcessResult:
-        callback = kwargs.get("progress_callback")
+        callback = cast(Callable[[ProgressEvent], None] | None, kwargs.get("progress_callback"))
         queue_item_id = kwargs.get("queue_item_id")
-        provider_name = kwargs.get("provider_name")
+        provider_name_raw = kwargs.get("provider_name")
+        provider_name: Literal["sonarr", "radarr"] | None = (
+            cast(Literal["sonarr", "radarr"], provider_name_raw)
+            if provider_name_raw in {"sonarr", "radarr"}
+            else None
+        )
         media_items = kwargs.get("media_items")
         assert isinstance(media_items, list)
         for index, media_item in enumerate(media_items, start=1):
@@ -162,7 +175,7 @@ def test_queue_manager_processes_fifo_and_accepts_new_items_while_running(
                         level="info",
                         message=f"Converting {media_item.title}",
                         queue_item_id=str(queue_item_id),
-                        provider=provider_name if provider_name in {"sonarr", "radarr"} else None,
+                        provider=provider_name,
                         current_index=index,
                         total=len(media_items),
                         current_stage="converting",
@@ -174,7 +187,7 @@ def test_queue_manager_processes_fifo_and_accepts_new_items_while_running(
                         level="success",
                         message=f"Completed {media_item.title}",
                         queue_item_id=str(queue_item_id),
-                        provider=provider_name if provider_name in {"sonarr", "radarr"} else None,
+                        provider=provider_name,
                         current_index=index,
                         total=len(media_items),
                         current_stage="complete",
@@ -188,8 +201,8 @@ def test_queue_manager_processes_fifo_and_accepts_new_items_while_running(
 
     manager = QueueManager(
         config=_config(tmp_path),
-        sonarr_provider=FakeSonarrProvider(),
-        radarr_provider=FakeRadarrProvider(),
+        sonarr_provider=cast(Any, FakeSonarrProvider()),
+        radarr_provider=cast(Any, FakeRadarrProvider()),
         console=Console(file=StringIO(), force_terminal=False, color_system=None),
     )
 
@@ -213,6 +226,96 @@ def test_queue_manager_processes_fifo_and_accepts_new_items_while_running(
     assert second.completed_files >= 1
 
 
+def test_queue_pause_blocks_next_episode_until_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("walkmarr.queue_manager.ensure_required_tools", lambda: "AtomicParsley")
+
+    class TwoEpisodeSonarrProvider(FakeSonarrProvider):
+        def build_media_items(self, **kwargs: object) -> list[MediaItem]:
+            output_root = kwargs["output_root"]
+            assert isinstance(output_root, Path)
+            return [
+                MediaItem(
+                    kind="episode",
+                    source_path=Path("/tmp/source-a.mkv"),
+                    output_path=output_root / "Futurama S01E01.mp4",
+                    profile_name="animation",
+                    title="A",
+                    series_title="Futurama",
+                    season_number=1,
+                    episode_number=1,
+                ),
+                MediaItem(
+                    kind="episode",
+                    source_path=Path("/tmp/source-b.mkv"),
+                    output_path=output_root / "Futurama S01E02.mp4",
+                    profile_name="animation",
+                    title="B",
+                    series_title="Futurama",
+                    season_number=1,
+                    episode_number=2,
+                ),
+            ]
+
+    first_finished = threading.Event()
+    proceed_to_second = threading.Event()
+    second_started = threading.Event()
+    processed_titles: list[str] = []
+
+    def _fake_process_media_items(**kwargs: object) -> BatchProcessResult:
+        media_items = kwargs["media_items"]
+        pause_callback = kwargs["pause_callback"]
+        assert isinstance(media_items, list)
+        assert callable(pause_callback)
+        for index, media_item in enumerate(media_items, start=1):
+            assert isinstance(media_item, MediaItem)
+            pause_callback()
+            processed_titles.append(media_item.title)
+            if index == 1:
+                first_finished.set()
+                assert proceed_to_second.wait(timeout=2.0)
+            else:
+                second_started.set()
+        return BatchProcessResult(converted=len(media_items), skipped=0, failed=0)
+
+    monkeypatch.setattr("walkmarr.queue_manager.process_media_items", _fake_process_media_items)
+
+    manager = QueueManager(
+        config=_config(tmp_path),
+        sonarr_provider=cast(Any, TwoEpisodeSonarrProvider()),
+        radarr_provider=cast(Any, FakeRadarrProvider()),
+        console=Console(file=StringIO(), force_terminal=False, color_system=None),
+    )
+    try:
+        queue_id = manager.add_item(
+            QueueItem(id="", provider="sonarr", provider_item_id=1, title="Futurama")
+        )
+
+        assert first_finished.wait(timeout=2.0)
+        manager.pause()
+        proceed_to_second.set()
+        time.sleep(0.1)
+
+        assert processed_titles == ["A"]
+        assert not second_started.is_set()
+        paused = next(item for item in manager.get_items() if item.id == queue_id)
+        assert paused.status == QueueItemStatus.PAUSED
+
+        manager.resume()
+        _wait_for(lambda: second_started.is_set())
+        _wait_for(
+            lambda: any(
+                item.id == queue_id and item.status == QueueItemStatus.COMPLETE
+                for item in manager.get_items()
+            )
+        )
+        assert processed_titles == ["A", "B"]
+    finally:
+        manager.stop()
+
+
 def test_queue_notifications_do_not_deadlock_on_reentrant_read(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -227,8 +330,8 @@ def test_queue_notifications_do_not_deadlock_on_reentrant_read(
 
     manager = QueueManager(
         config=_config(tmp_path),
-        sonarr_provider=FakeSonarrProvider(),
-        radarr_provider=FakeRadarrProvider(),
+        sonarr_provider=cast(Any, FakeSonarrProvider()),
+        radarr_provider=cast(Any, FakeRadarrProvider()),
         console=Console(file=StringIO(), force_terminal=False, color_system=None),
     )
 
@@ -251,8 +354,8 @@ def test_queue_manager_stop_returns_cleanly(
     monkeypatch.setattr("walkmarr.queue_manager.ensure_required_tools", lambda: "AtomicParsley")
     manager = QueueManager(
         config=_config(tmp_path),
-        sonarr_provider=FakeSonarrProvider(),
-        radarr_provider=FakeRadarrProvider(),
+        sonarr_provider=cast(Any, FakeSonarrProvider()),
+        radarr_provider=cast(Any, FakeRadarrProvider()),
         console=Console(file=StringIO(), force_terminal=False, color_system=None),
     )
     manager.stop()
@@ -267,8 +370,8 @@ def test_sonarr_expansion_uses_cache_for_repeat_item(
     sonarr = FakeSonarrProvider()
     manager = QueueManager(
         config=_config(tmp_path),
-        sonarr_provider=sonarr,
-        radarr_provider=FakeRadarrProvider(),
+        sonarr_provider=cast(Any, sonarr),
+        radarr_provider=cast(Any, FakeRadarrProvider()),
         console=Console(file=StringIO(), force_terminal=False, color_system=None),
     )
     queue_item = QueueItem(id="q1", provider="sonarr", provider_item_id=1, title="Futurama")
@@ -281,5 +384,7 @@ def test_sonarr_expansion_uses_cache_for_repeat_item(
     assert sonarr.get_series_by_id_calls == 1
     assert sonarr.list_episodes_calls == 1
     assert sonarr.list_episode_files_calls == 1
+    assert sonarr.build_media_items_kwargs is not None
+    assert sonarr.build_media_items_kwargs["series_id"] == 1
 
     manager.stop()

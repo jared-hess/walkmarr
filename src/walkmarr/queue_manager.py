@@ -135,7 +135,7 @@ class QueueManager:
                 if self._current_queue_item_id is not None
                 else None
             )
-            if current is not None and current.status == QueueItemStatus.RUNNING:
+            if current is not None and current.status in {QueueItemStatus.EXPANDING, QueueItemStatus.RUNNING}:
                 self._update_item_locked(current.id, status=QueueItemStatus.PAUSED)
                 current = self._find_by_id_locked(current.id)
             self._notify_locked(
@@ -227,7 +227,8 @@ class QueueManager:
                 if next_item is None:
                     continue
                 self._current_queue_item_id = next_item.id
-                self._current_cancellation = CancellationToken()
+                current_cancellation = CancellationToken()
+                self._current_cancellation = current_cancellation
                 self._update_item_locked(
                     next_item.id,
                     status=QueueItemStatus.EXPANDING,
@@ -249,9 +250,10 @@ class QueueManager:
             try:
                 media_items, profile_name = self._expand_queue_item(next_item)
                 with self._condition:
+                    status = QueueItemStatus.PAUSED if self._paused else QueueItemStatus.RUNNING
                     self._update_item_locked(
                         next_item.id,
-                        status=QueueItemStatus.RUNNING,
+                        status=status,
                         profile_name=profile_name,
                         total_files=len(media_items),
                         output_root=str(self._output_root_for_provider(next_item.provider)),
@@ -270,13 +272,14 @@ class QueueManager:
                     overwrite=next_item.mode == "overwrite",
                     continue_on_error=self._config.queue_continue_on_error,
                     queue_item_id=next_item.id,
-                    cancellation_token=self._current_cancellation,
+                    cancellation_token=current_cancellation,
+                    pause_callback=lambda: self._wait_while_paused(current_cancellation),
                     progress_callback=self._on_progress,
                 )
 
                 with self._condition:
                     status = QueueItemStatus.COMPLETE
-                    if self._current_cancellation is not None and self._current_cancellation.is_canceled:
+                    if current_cancellation.is_canceled:
                         status = QueueItemStatus.CANCELED
                     self._update_item_locked(
                         next_item.id,
@@ -327,6 +330,12 @@ class QueueManager:
         self._notifications.put(_NOTIFY_STOP)
         self._worker.join(timeout=5)
         self._notifier.join(timeout=5)
+
+    def _wait_while_paused(self, cancellation_token: CancellationToken) -> None:
+        with self._condition:
+            self._condition.wait_for(
+                lambda: self._shutdown or not self._paused or cancellation_token.is_canceled
+            )
 
     def _on_progress(self, event: ProgressEvent) -> None:
         queue_item_id = event.queue_item_id
@@ -450,7 +459,9 @@ class QueueManager:
                 profile_name=profile_name,
                 path_mappings=self._config.path_mappings,
                 output_root=self._config.output_roots["shows"],
+                series_id=queue_item.provider_item_id,
                 series_genre=_primary_genre(selected),
+                series_artwork_url=self._sonarr.poster_url(selected),
                 allow_unmapped_existing_local=self._config.allow_unmapped_existing_local,
             )
             if not media_items:
