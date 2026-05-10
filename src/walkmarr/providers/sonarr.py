@@ -86,7 +86,9 @@ class SonarrProvider:
         profile_name: str,
         path_mappings: list[PathMapping],
         output_root: Path,
+        series_id: int | None = None,
         series_genre: str | None = None,
+        series_artwork_url: str | None = None,
         allow_unmapped_existing_local: bool = False,
     ) -> list[MediaItem]:
         """Build normalized MediaItem list from Sonarr episode metadata."""
@@ -164,6 +166,7 @@ class SonarrProvider:
                     profile_name=profile_name,
                     title=episode_title,
                     remote_source_path=remote_path,
+                    provider_item_id=series_id,
                     series_title=series_title,
                     season_number=season,
                     episode_number=episode_num,
@@ -171,6 +174,7 @@ class SonarrProvider:
                     episode_id=episode_id,
                     air_date=air_date,
                     genre=series_genre,
+                    artwork_url=series_artwork_url,
                 )
             )
 
@@ -182,6 +186,10 @@ class SonarrProvider:
                 item.episode_number or 0,
             ),
         )
+
+    def poster_url(self, series: dict[str, Any]) -> str | None:
+        """Return the best poster URL from a Sonarr series payload."""
+        return _poster_url(series, self.url)
 
     def _get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
         headers = {"X-Api-Key": self.api_key}
@@ -213,4 +221,40 @@ def _extract_iso_date(value: object) -> str | None:
         except ValueError:
             return None
         return candidate
+    return None
+
+
+def _poster_url(payload: dict[str, Any], base_url: str) -> str | None:
+    images = payload.get("images")
+    if not isinstance(images, list):
+        return None
+
+    poster_images = [image for image in images if _image_cover_type(image) == "poster"]
+    for image in [*poster_images, *images]:
+        if not isinstance(image, dict):
+            continue
+        url = _image_url(image, base_url)
+        if url is not None:
+            return url
+    return None
+
+
+def _image_cover_type(image: object) -> str | None:
+    if not isinstance(image, dict):
+        return None
+    cover_type = image.get("coverType")
+    if not isinstance(cover_type, str):
+        return None
+    return cover_type.casefold().strip()
+
+
+def _image_url(image: dict[object, object], base_url: str) -> str | None:
+    for key in ("remoteUrl", "url"):
+        value = image.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        cleaned = value.strip()
+        if cleaned.startswith("http://") or cleaned.startswith("https://"):
+            return cleaned
+        return f"{base_url}/{cleaned.lstrip('/')}"
     return None

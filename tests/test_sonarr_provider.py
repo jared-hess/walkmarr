@@ -113,7 +113,9 @@ def test_build_episode_media_items() -> None:
         profile_name="animation",
         path_mappings=[PathMapping(remote="Z:/shows", local=Path("/mnt/z/shows"))],
         output_root=Path("/mnt/d/ipod/shows"),
+        series_id=42,
         series_genre="Animation",
+        series_artwork_url="https://image.example/futurama-poster.jpg",
     )
 
     assert len(items) == 1
@@ -123,8 +125,25 @@ def test_build_episode_media_items() -> None:
         "/mnt/d/ipod/shows/Futurama/Season 1/Futurama - S01E01 - Space Pilot 3000.mp4"
     )
     assert item.title == "Space Pilot 3000"
+    assert item.provider_item_id == 42
+    assert item.season_number == 1
     assert item.air_date == "1999-03-28"
     assert item.genre == "Animation"
+    assert item.artwork_url == "https://image.example/futurama-poster.jpg"
+
+
+def test_series_poster_url_prefers_poster_image() -> None:
+    provider = _provider(FakeSession({}))
+    url = provider.poster_url(
+        {
+            "title": "Futurama",
+            "images": [
+                {"coverType": "banner", "remoteUrl": "https://image.example/banner.jpg"},
+                {"coverType": "poster", "remoteUrl": "https://image.example/poster.jpg"},
+            ],
+        }
+    )
+    assert url == "https://image.example/poster.jpg"
 
 
 def test_build_episode_media_items_multi_episode_range() -> None:
@@ -155,10 +174,13 @@ def test_build_episode_media_items_multi_episode_range() -> None:
         profile_name="animation",
         path_mappings=[PathMapping(remote="Z:/shows", local=Path("/mnt/z/shows"))],
         output_root=Path("/mnt/d/ipod/shows"),
+        series_id=42,
     )
 
     assert len(items) == 1
     item = items[0]
+    assert item.provider_item_id == 42
+    assert item.season_number == 1
     assert item.episode_id == "S01E01-E02"
     assert item.episode_end_number == 2
     assert item.output_path == Path(

@@ -54,6 +54,7 @@ class MediaItem:
     profile_name: str
     title: str
     remote_source_path: str | None = None
+    provider_item_id: int | None = None
     series_title: str | None = None
     season_number: int | None = None
     episode_number: int | None = None
@@ -64,6 +65,7 @@ class MediaItem:
     year: int | None = None
     release_date: str | None = None
     genre: str | None = None
+    artwork_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,41 @@ class GenreProfileRule:
 
     genres: tuple[str, ...]
     profile: str
+
+
+@dataclass(frozen=True)
+class ArtworkFallbackProviderConfig:
+    """Configuration for a single provider fallback target."""
+
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class ArtworkProviderConfig:
+    """Configuration for an artwork provider."""
+
+    enabled: bool = True
+    apply_to: tuple[Literal["tv", "movie"], ...] = ("tv",)
+    country: str = "US"
+    image_size: int = 320
+    timeout_seconds: int = 10
+    minimum_confidence: Literal["exact", "parsed"] = "parsed"
+    sonarr_fallback: ArtworkFallbackProviderConfig = field(
+        default_factory=ArtworkFallbackProviderConfig
+    )
+    radarr_fallback: ArtworkFallbackProviderConfig = field(
+        default_factory=ArtworkFallbackProviderConfig
+    )
+
+
+@dataclass(frozen=True)
+class ArtworkConfig:
+    """Top-level artwork-related configuration."""
+
+    enabled: bool = True
+    providers: dict[str, ArtworkProviderConfig] = field(
+        default_factory=lambda: {"itunes_tv_season": ArtworkProviderConfig()}
+    )
 
 
 @dataclass(frozen=True)
@@ -96,6 +133,7 @@ class AppConfig:
     queue_default_mode: Literal["missing_only", "overwrite"] = "missing_only"
     queue_remember_completed_until_exit: bool = True
     keep_failed_temps: bool = False
+    artwork: ArtworkConfig = field(default_factory=ArtworkConfig)
 
 
 class QueueItemStatus(Enum):

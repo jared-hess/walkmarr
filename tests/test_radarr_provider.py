@@ -102,6 +102,10 @@ def test_build_movie_media_item() -> None:
             "year": 2000,
             "genres": ["Drama", "Crime"],
             "inCinemas": "2000-01-21T00:00:00Z",
+            "images": [
+                {"coverType": "fanart", "remoteUrl": "https://image.example/fanart.jpg"},
+                {"coverType": "poster", "remoteUrl": "https://image.example/poster.jpg"},
+            ],
             "movieFile": {"path": "Z:/movies/American Psycho (2000)/source.mkv"},
         },
         profile_name="movie",
@@ -114,6 +118,21 @@ def test_build_movie_media_item() -> None:
     )
     assert item.release_date == "2000-01-21"
     assert item.genre == "Drama"
+    assert item.artwork_url == "https://image.example/poster.jpg"
+    assert item.provider_item_id is None
+    assert item.series_title is None
+    assert item.season_number is None
+
+
+def test_movie_poster_url_accepts_relative_provider_url() -> None:
+    provider = _provider(FakeSession({}))
+    url = provider.poster_url(
+        {
+            "title": "American Psycho",
+            "images": [{"coverType": "poster", "url": "/MediaCover/1/poster.jpg"}],
+        }
+    )
+    assert url == "http://localhost:7878/MediaCover/1/poster.jpg"
 
 
 def test_build_movie_media_item_uses_release_date_year_when_missing() -> None:
