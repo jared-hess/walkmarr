@@ -93,7 +93,7 @@ def test_process_media_items_handles_batch(
             source_video_bitrate_kbps=1000,
             selected_audio_index=1,
             selected_audio_language="eng",
-            video_bitrate_kbps=500,
+            crf=30,
             maxrate_kbps=768,
             bufsize_kbps=1500,
             audio_channels=2,

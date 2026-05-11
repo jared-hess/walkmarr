@@ -23,22 +23,24 @@ def _audio_stream(index: int, language: str, channels: int, is_default: bool) ->
 
 
 def _make_profile(
-    video_bitrate_kbps: int = 500,
+    crf: int = 30,
+    max_width: int = 320,
     maxrate_cap_kbps: int = 768,
     bufsize_kbps: int = 1500,
     h264_level: str = "1.3",
     h264_profile: str = "baseline",
+    mono_bitrate_kbps: int = 96,
+    stereo_bitrate_kbps: int = 160,
 ) -> VideoProfile:
     return VideoProfile(
-        crf=30,
-        video_bitrate_kbps=video_bitrate_kbps,
+        crf=crf,
         maxrate_floor_kbps=250,
         maxrate_cap_kbps=maxrate_cap_kbps,
         bufsize_kbps=bufsize_kbps,
         bitrate_multiplier=1.5,
-        audio_bitrate_mono_kbps=160,
-        audio_bitrate_stereo_kbps=160,
-        max_width=320,
+        audio_bitrate_mono_kbps=mono_bitrate_kbps,
+        audio_bitrate_stereo_kbps=stereo_bitrate_kbps,
+        max_width=max_width,
         h264_profile=h264_profile,
         h264_level=h264_level,
     )
@@ -91,7 +93,7 @@ def test_audio_wav_command_exact_order() -> None:
     expected = [
         "ffmpeg", "-y", "-fflags", "+genpts",
         "-i", str(source),
-        "-map", "0:a:0",
+        "-map", "0:1",
         "-vn",
         "-af", "aresample=async=1:first_pts=0",
         "-ac", "2",
@@ -117,6 +119,46 @@ def test_fdkaac_command_exact() -> None:
         str(plan.tmp_audio_wav_path),
     ]
     assert plan.fdkaac_command == expected
+
+
+def test_audio_bitrate_uses_selected_stream_channel_count() -> None:
+    source = Path("/src/in.mkv")
+    staging = Path("/staging")
+
+    mono_plan = build_ipod_conversion_plan(
+        source_path=source,
+        staging_directory=staging,
+        profile=_make_profile(mono_bitrate_kbps=64, stereo_bitrate_kbps=128),
+        probe=_make_probe(audio_index=2, channels=1),
+    )
+    stereo_plan = build_ipod_conversion_plan(
+        source_path=source,
+        staging_directory=staging,
+        profile=_make_profile(mono_bitrate_kbps=64, stereo_bitrate_kbps=128),
+        probe=_make_probe(audio_index=3, channels=6),
+    )
+
+    assert mono_plan.audio_wav_command[mono_plan.audio_wav_command.index("-ac") + 1] == "1"
+    assert mono_plan.fdkaac_command[mono_plan.fdkaac_command.index("-b") + 1] == "64"
+    assert mono_plan.audio_channels == 1
+    assert mono_plan.audio_bitrate_kbps == 64
+    assert stereo_plan.audio_wav_command[stereo_plan.audio_wav_command.index("-ac") + 1] == "2"
+    assert stereo_plan.fdkaac_command[stereo_plan.fdkaac_command.index("-b") + 1] == "128"
+    assert stereo_plan.audio_channels == 2
+    assert stereo_plan.audio_bitrate_kbps == 128
+
+
+def test_audio_wav_command_maps_selected_audio_stream() -> None:
+    source = Path("/src/in.mkv")
+    staging = Path("/staging")
+    plan = build_ipod_conversion_plan(
+        source_path=source,
+        staging_directory=staging,
+        profile=_make_profile(),
+        probe=_make_probe(audio_index=4),
+    )
+
+    assert plan.audio_wav_command[plan.audio_wav_command.index("-map") + 1] == "0:4"
 
 
 def test_video_mux_command_required_flags() -> None:
@@ -153,7 +195,8 @@ def test_video_mux_command_required_flags() -> None:
     assert "-profile:v" in cmd and cmd[cmd.index("-profile:v") + 1] == "baseline"
     assert "-level:v" in cmd and cmd[cmd.index("-level:v") + 1] == "1.3"
     assert "-preset" in cmd and cmd[cmd.index("-preset") + 1] == "medium"
-    assert "-b:v" in cmd and cmd[cmd.index("-b:v") + 1] == "500k"
+    assert "-crf" in cmd and cmd[cmd.index("-crf") + 1] == "30"
+    assert "-b:v" not in cmd
     assert "-maxrate" in cmd and cmd[cmd.index("-maxrate") + 1] == "768k"
     assert "-bufsize" in cmd and cmd[cmd.index("-bufsize") + 1] == "1500k"
     assert "-pix_fmt" in cmd and cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
@@ -165,7 +208,6 @@ def test_video_mux_command_required_flags() -> None:
     assert "-af" not in cmd
     assert "-ar" not in cmd
     assert "-b:a" not in cmd
-    assert "-crf" not in cmd
     assert "-r" not in cmd
     assert "aac" not in cmd
     assert "3.0" not in cmd
@@ -178,8 +220,8 @@ def test_video_mux_command_exact() -> None:
     plan = build_ipod_conversion_plan(
         source_path=source,
         staging_directory=staging,
-        profile=_make_profile(),
-        probe=_make_probe(),
+        profile=_make_profile(crf=28, max_width=640),
+        probe=_make_probe(source_video_bitrate_kbps=300),
     )
     expected = [
         "ffmpeg", "-y", "-fflags", "+genpts",
@@ -188,13 +230,13 @@ def test_video_mux_command_exact() -> None:
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-sn", "-dn",
-        "-vf", "scale=320:240:force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1",
+        "-vf", "scale=640:480:force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1",
         "-c:v", "libx264",
         "-profile:v", "baseline",
         "-level:v", "1.3",
         "-preset", "medium",
-        "-b:v", "500k",
-        "-maxrate", "768k",
+        "-crf", "28",
+        "-maxrate", "450k",
         "-bufsize", "1500k",
         "-pix_fmt", "yuv420p",
         "-x264-params", "ref=1:bframes=0:cabac=0",
@@ -217,7 +259,7 @@ def test_plan_metadata_fields() -> None:
     assert plan.source_video_bitrate_kbps == 3175
     assert plan.selected_audio_index == 1
     assert plan.selected_audio_language == "eng"
-    assert plan.video_bitrate_kbps == 500
+    assert plan.crf == 30
     assert plan.maxrate_kbps == 768
     assert plan.bufsize_kbps == 1500
     assert plan.audio_channels == 2

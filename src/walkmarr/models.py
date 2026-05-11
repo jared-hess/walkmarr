@@ -40,7 +40,6 @@ class VideoProfile:
     h264_profile: str
     h264_level: str
     preferred_audio_languages: tuple[str, ...] = ("eng",)
-    video_bitrate_kbps: int = 500
     bufsize_kbps: int = 1500
 
 

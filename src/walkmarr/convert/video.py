@@ -36,7 +36,7 @@ class ConversionPlan:
     source_video_bitrate_kbps: int | None
     selected_audio_index: int
     selected_audio_language: str | None
-    video_bitrate_kbps: int
+    crf: int
     maxrate_kbps: int
     bufsize_kbps: int
     audio_channels: int
@@ -143,7 +143,7 @@ def build_ipod_conversion_plan(
     ffmpeg_bin: str = "ffmpeg",
     fdkaac_bin: str = "fdkaac",
 ) -> ConversionPlan:
-    maxrate_kbps = profile.maxrate_cap_kbps
+    maxrate_kbps = calculate_maxrate_kbps(probe.source_video_bitrate_kbps, profile)
 
     selected_audio = select_audio_stream(
         probe.audio_streams,
@@ -152,9 +152,15 @@ def build_ipod_conversion_plan(
     if selected_audio is None:
         raise ConversionError(f"No audio streams found in source media: {source_path}")
 
-    audio_channels = 2
-    audio_bitrate_kbps = profile.audio_bitrate_stereo_kbps
-    filter_expr = "scale=320:240:force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1"
+    audio_channels = 1 if selected_audio.channels == 1 else 2
+    audio_bitrate_kbps = (
+        profile.audio_bitrate_mono_kbps if audio_channels == 1 else profile.audio_bitrate_stereo_kbps
+    )
+    max_height = profile.max_width * 3 // 4
+    filter_expr = (
+        f"scale={profile.max_width}:{max_height}:"
+        "force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1"
+    )
 
     digest = hashlib.sha1(str(source_path).encode()).hexdigest()[:12]
     stem = source_path.stem
@@ -165,17 +171,17 @@ def build_ipod_conversion_plan(
     audio_wav_command = [
         ffmpeg_bin, "-y", "-fflags", "+genpts",
         "-i", str(source_path),
-        "-map", "0:a:0",
+        "-map", f"0:{selected_audio.index}",
         "-vn",
         "-af", "aresample=async=1:first_pts=0",
-        "-ac", "2",
+        "-ac", str(audio_channels),
         "-ar", "44100",
         "-c:a", "pcm_s16le",
         str(tmp_audio_wav_path),
     ]
 
     fdkaac_command = [
-        fdkaac_bin, "-b", "160",
+        fdkaac_bin, "-b", str(audio_bitrate_kbps),
         "-o", str(tmp_audio_m4a_path),
         str(tmp_audio_wav_path),
     ]
@@ -192,7 +198,7 @@ def build_ipod_conversion_plan(
         "-profile:v", profile.h264_profile,
         "-level:v", profile.h264_level,
         "-preset", "medium",
-        "-b:v", f"{profile.video_bitrate_kbps}k",
+        "-crf", str(profile.crf),
         "-maxrate", f"{maxrate_kbps}k",
         "-bufsize", f"{profile.bufsize_kbps}k",
         "-pix_fmt", "yuv420p",
@@ -212,7 +218,7 @@ def build_ipod_conversion_plan(
         source_video_bitrate_kbps=probe.source_video_bitrate_kbps,
         selected_audio_index=selected_audio.index,
         selected_audio_language=selected_audio.language_normalized,
-        video_bitrate_kbps=profile.video_bitrate_kbps,
+        crf=profile.crf,
         maxrate_kbps=maxrate_kbps,
         bufsize_kbps=profile.bufsize_kbps,
         audio_channels=audio_channels,
