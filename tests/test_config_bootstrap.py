@@ -18,6 +18,9 @@ def test_bootstrap_writes_config(tmp_path: Path) -> None:
     assert "video_bitrate_kbps" not in parsed["profiles"]["animation"]
     assert "video_bitrate_kbps" not in parsed["profiles"]["live_action"]
     assert "video_bitrate_kbps" not in parsed["profiles"]["movie"]
+    assert parsed["profiles"]["animation"]["scan_target_aspect_ratio"] == "4:3"
+    assert parsed["profiles"]["animation"]["scan_tolerance"] == 0.03
+    assert parsed["profiles"]["animation"]["scan_match_mode"] == "near"
 
 
 def test_bootstrap_writes_artwork_defaults(tmp_path: Path) -> None:

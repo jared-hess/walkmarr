@@ -41,6 +41,9 @@ class VideoProfile:
     h264_level: str
     preferred_audio_languages: tuple[str, ...] = ("eng",)
     bufsize_kbps: int = 1500
+    scan_target_aspect_ratio: str = "4:3"
+    scan_tolerance: float = 0.03
+    scan_match_mode: Literal["near", "wider", "taller", "exact"] = "near"
 
 
 @dataclass(frozen=True)

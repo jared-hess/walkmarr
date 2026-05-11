@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -20,6 +21,9 @@ from walkmarr.models import (
     ProviderConfig,
     VideoProfile,
 )
+
+
+_SCAN_MATCH_MODES = {"near", "wider", "taller", "exact"}
 
 
 def config_search_paths() -> list[Path]:
@@ -94,6 +98,9 @@ def default_bootstrap_payload() -> dict[str, Any]:
                 "h264_profile": "baseline",
                 "h264_level": "1.3",
                 "preferred_audio_languages": ["eng"],
+                "scan_target_aspect_ratio": "4:3",
+                "scan_tolerance": 0.03,
+                "scan_match_mode": "near",
             },
             "live_action": {
                 "crf": 30,
@@ -107,6 +114,9 @@ def default_bootstrap_payload() -> dict[str, Any]:
                 "h264_profile": "baseline",
                 "h264_level": "1.3",
                 "preferred_audio_languages": ["eng"],
+                "scan_target_aspect_ratio": "4:3",
+                "scan_tolerance": 0.03,
+                "scan_match_mode": "near",
             },
             "movie": {
                 "crf": 30,
@@ -120,6 +130,9 @@ def default_bootstrap_payload() -> dict[str, Any]:
                 "h264_profile": "baseline",
                 "h264_level": "1.3",
                 "preferred_audio_languages": ["eng"],
+                "scan_target_aspect_ratio": "4:3",
+                "scan_tolerance": 0.03,
+                "scan_match_mode": "near",
             },
         },
         "overrides": {"sonarr": {}, "radarr": {}},
@@ -196,6 +209,15 @@ def _build_video_profile(name: str, data: dict[str, Any]) -> VideoProfile:
         else:
             preferred_languages = ("eng",)
 
+        scan_match_mode = str(data.get("scan_match_mode", "near")).casefold()
+        if scan_match_mode not in _SCAN_MATCH_MODES:
+            raise ConfigError(
+                f"Profile '{name}' has invalid scan_match_mode: {scan_match_mode}"
+            )
+        scan_tolerance = float(data.get("scan_tolerance", 0.03))
+        if not math.isfinite(scan_tolerance) or scan_tolerance < 0:
+            raise ConfigError(f"Profile '{name}' has invalid scan_tolerance: {scan_tolerance}")
+
         return VideoProfile(
             crf=int(data["crf"]),
             maxrate_floor_kbps=int(data["maxrate_floor_kbps"]),
@@ -208,6 +230,9 @@ def _build_video_profile(name: str, data: dict[str, Any]) -> VideoProfile:
             h264_profile=str(data["h264_profile"]),
             h264_level=str(data["h264_level"]),
             preferred_audio_languages=preferred_languages,
+            scan_target_aspect_ratio=str(data.get("scan_target_aspect_ratio", "4:3")),
+            scan_tolerance=scan_tolerance,
+            scan_match_mode=cast(Literal["near", "wider", "taller", "exact"], scan_match_mode),
         )
     except KeyError as exc:
         raise ConfigError(f"Profile '{name}' is missing required key: {exc}") from exc

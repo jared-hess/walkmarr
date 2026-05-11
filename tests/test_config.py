@@ -44,6 +44,9 @@ profiles:
     max_width: 640
     h264_profile: "baseline"
     h264_level: "3.0"
+    scan_target_aspect_ratio: "16:9"
+    scan_tolerance: 0.01
+    scan_match_mode: "wider"
   movie:
     crf: 27
     maxrate_floor_kbps: 400
@@ -71,6 +74,12 @@ overrides:
     assert loaded_path == cfg_path
     assert resolve_api_key(config, "sonarr") == "abc"
     assert resolve_api_key(config, "radarr") == "def"
+    assert config.profiles["animation"].scan_target_aspect_ratio == "16:9"
+    assert config.profiles["animation"].scan_tolerance == 0.01
+    assert config.profiles["animation"].scan_match_mode == "wider"
+    assert config.profiles["movie"].scan_target_aspect_ratio == "4:3"
+    assert config.profiles["movie"].scan_tolerance == 0.03
+    assert config.profiles["movie"].scan_match_mode == "near"
 
 
 def test_legacy_video_bitrate_config_is_ignored(tmp_path: Path) -> None:
@@ -111,6 +120,46 @@ profiles:
     _, config = load_config(cfg_path)
 
     assert not hasattr(config.profiles["animation"], "video_bitrate_kbps")
+
+
+@pytest.mark.parametrize("scan_tolerance", [".nan", ".inf", -0.1])
+def test_invalid_scan_tolerance_error(tmp_path: Path, scan_tolerance: object) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        f"""
+providers:
+  sonarr:
+    url: "http://localhost:8989"
+    api_key: "x"
+  radarr:
+    url: "http://localhost:7878"
+    api_key: "y"
+path_mappings:
+  - remote: "/tv"
+    local: "/mnt/z/shows"
+output_roots:
+  shows: "/mnt/d/ipod/shows"
+  movies: "/mnt/d/ipod/movies"
+default_profiles:
+  sonarr: "animation"
+  radarr: "animation"
+profiles:
+  animation:
+    crf: 30
+    maxrate_floor_kbps: 250
+    maxrate_cap_kbps: 1200
+    bitrate_multiplier: 1.5
+    audio_bitrate_mono_kbps: 64
+    audio_bitrate_stereo_kbps: 96
+    max_width: 640
+    h264_profile: "baseline"
+    h264_level: "3.0"
+    scan_tolerance: {scan_tolerance}
+""",
+    )
+
+    with pytest.raises(ConfigError, match="invalid scan_tolerance"):
+        load_config(cfg_path)
 
 
 def test_missing_profile_error(tmp_path: Path) -> None:

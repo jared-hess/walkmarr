@@ -71,6 +71,9 @@ profiles:
     h264_profile: "baseline"
     h264_level: "1.3"
     preferred_audio_languages: ["eng"]
+    scan_target_aspect_ratio: "4:3"
+    scan_tolerance: 0.03
+    scan_match_mode: "near"
 
   live_action:
     crf: 30
@@ -84,6 +87,9 @@ profiles:
     h264_profile: "baseline"
     h264_level: "1.3"
     preferred_audio_languages: ["eng"]
+    scan_target_aspect_ratio: "4:3"
+    scan_tolerance: 0.03
+    scan_match_mode: "near"
 
   movie:
     crf: 30
@@ -97,6 +103,9 @@ profiles:
     h264_profile: "baseline"
     h264_level: "1.3"
     preferred_audio_languages: ["eng"]
+    scan_target_aspect_ratio: "4:3"
+    scan_tolerance: 0.03
+    scan_match_mode: "near"
 
 overrides:
   sonarr:
