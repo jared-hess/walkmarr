@@ -6,12 +6,14 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
+import re
 import subprocess
 from typing import Any, Literal
 
 
 AspectMatchMode = Literal["near", "wider", "taller", "exact"]
 AspectSource = Literal["provider", "probe"]
+_RESOLUTION_RE = re.compile(r"^\s*(?P<width>\d+)\s*x\s*(?P<height>\d+)\s*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -256,8 +258,21 @@ def _metadata_from_media_info(value: object, *, source: AspectSource) -> AspectM
     width = _positive_int(value.get("width"))
     height = _positive_int(value.get("height"))
     if width is None or height is None:
+        width, height = _dimensions_from_resolution(value.get("resolution"))
+    if width is None or height is None:
         return None
     return AspectMetadata(width=width, height=height, source=source)
+
+
+def _dimensions_from_resolution(value: object) -> tuple[int | None, int | None]:
+    if not isinstance(value, str):
+        return None, None
+    match = _RESOLUTION_RE.match(value)
+    if match is None:
+        return None, None
+    width = _positive_int(match.group("width"))
+    height = _positive_int(match.group("height"))
+    return width, height
 
 
 def _positive_int(value: object) -> int | None:

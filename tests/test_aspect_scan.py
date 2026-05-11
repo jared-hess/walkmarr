@@ -92,6 +92,30 @@ def test_extract_sonarr_metadata_skips_missing_media_info() -> None:
     assert records == []
 
 
+def test_extract_sonarr_metadata_uses_media_info_resolution_when_dimensions_missing() -> None:
+    records = extract_sonarr_metadata(
+        series={"title": "Test Show"},
+        episodes=[
+            {
+                "title": "Pilot",
+                "seasonNumber": 1,
+                "episodeNumber": 1,
+                "hasFile": True,
+                "episodeFileId": 10,
+            }
+        ],
+        episode_files=[
+            {
+                "id": 10,
+                "path": "/shows/Test/Pilot.mkv",
+                "mediaInfo": {"resolution": "1440x1080"},
+            }
+        ],
+    )
+
+    assert records[0].metadata == AspectMetadata(width=1440, height=1080, source="provider")
+
+
 def test_extract_sonarr_metadata_skips_malformed_episode_file_ids() -> None:
     records = extract_sonarr_metadata(
         series={"title": "Test Show"},
@@ -135,6 +159,21 @@ def test_extract_radarr_metadata_uses_movie_file_media_info() -> None:
     assert records[0].item == "1999"
     assert records[0].path == "/movies/Test Movie.mkv"
     assert records[0].metadata == AspectMetadata(width=1920, height=1080, source="provider")
+
+
+def test_extract_radarr_metadata_uses_media_info_resolution_when_dimensions_missing() -> None:
+    records = extract_radarr_metadata(
+        movie={
+            "title": "Test Movie",
+            "year": 1999,
+            "movieFile": {
+                "path": "/movies/Test Movie.mkv",
+                "mediaInfo": {"resolution": "720x540"},
+            },
+        }
+    )
+
+    assert records[0].metadata == AspectMetadata(width=720, height=540, source="provider")
 
 
 def test_extract_radarr_metadata_skips_missing_media_info() -> None:
