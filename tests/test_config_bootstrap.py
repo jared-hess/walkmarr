@@ -15,6 +15,9 @@ def test_bootstrap_writes_config(tmp_path: Path) -> None:
     assert target in written
     parsed = yaml.safe_load(target.read_text(encoding="utf-8"))
     assert parsed["providers"]["sonarr"]["url"] == "http://localhost:8989"
+    assert "video_bitrate_kbps" not in parsed["profiles"]["animation"]
+    assert "video_bitrate_kbps" not in parsed["profiles"]["live_action"]
+    assert "video_bitrate_kbps" not in parsed["profiles"]["movie"]
 
 
 def test_bootstrap_writes_artwork_defaults(tmp_path: Path) -> None:

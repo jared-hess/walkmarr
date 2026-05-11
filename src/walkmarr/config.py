@@ -84,7 +84,6 @@ def default_bootstrap_payload() -> dict[str, Any]:
         "profiles": {
             "animation": {
                 "crf": 30,
-                "video_bitrate_kbps": 500,
                 "maxrate_floor_kbps": 250,
                 "maxrate_cap_kbps": 768,
                 "bufsize_kbps": 1500,
@@ -98,7 +97,6 @@ def default_bootstrap_payload() -> dict[str, Any]:
             },
             "live_action": {
                 "crf": 30,
-                "video_bitrate_kbps": 500,
                 "maxrate_floor_kbps": 250,
                 "maxrate_cap_kbps": 768,
                 "bufsize_kbps": 1500,
@@ -112,7 +110,6 @@ def default_bootstrap_payload() -> dict[str, Any]:
             },
             "movie": {
                 "crf": 30,
-                "video_bitrate_kbps": 500,
                 "maxrate_floor_kbps": 250,
                 "maxrate_cap_kbps": 768,
                 "bufsize_kbps": 1500,
@@ -201,7 +198,6 @@ def _build_video_profile(name: str, data: dict[str, Any]) -> VideoProfile:
 
         return VideoProfile(
             crf=int(data["crf"]),
-            video_bitrate_kbps=int(data.get("video_bitrate_kbps", 500)),
             maxrate_floor_kbps=int(data["maxrate_floor_kbps"]),
             maxrate_cap_kbps=int(data["maxrate_cap_kbps"]),
             bufsize_kbps=int(data.get("bufsize_kbps", 1500)),

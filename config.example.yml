@@ -61,7 +61,6 @@ genre_profile_map:
 profiles:
   animation:
     crf: 30
-    video_bitrate_kbps: 500
     maxrate_floor_kbps: 250
     maxrate_cap_kbps: 768
     bufsize_kbps: 1500
@@ -75,7 +74,6 @@ profiles:
 
   live_action:
     crf: 30
-    video_bitrate_kbps: 500
     maxrate_floor_kbps: 250
     maxrate_cap_kbps: 768
     bufsize_kbps: 1500
@@ -89,7 +87,6 @@ profiles:
 
   movie:
     crf: 30
-    video_bitrate_kbps: 500
     maxrate_floor_kbps: 250
     maxrate_cap_kbps: 768
     bufsize_kbps: 1500
