@@ -22,12 +22,25 @@ from walkmarr.config import (
 from walkmarr.exceptions import ConfigError, ProviderError, WalkmarrError
 from walkmarr.logging_config import configure_file_logging
 from walkmarr.models import AppConfig
+from walkmarr.paths import map_remote_path_to_local
 from walkmarr.process import ensure_required_tools, process_media_items
 from walkmarr.providers.radarr import RadarrProvider
 from walkmarr.providers.sonarr import SonarrProvider
+from walkmarr.scan.aspect import (
+    AspectScanRecord,
+    extract_radarr_metadata,
+    extract_sonarr_metadata,
+    format_tsv,
+    matching_records,
+    parse_ratio,
+    probe_aspect_metadata,
+)
 
 
 STAGING_MODE_CHOICES = ("auto", "always", "never")
+SCAN_PROVIDER_CHOICES = ("sonarr", "radarr", "all")
+ASPECT_SOURCE_CHOICES = ("provider", "probe")
+ASPECT_MATCH_CHOICES = ("near", "wider", "taller", "exact")
 
 
 @dataclass
@@ -70,6 +83,18 @@ def _primary_genre(payload: dict[str, object]) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _profile_scan_defaults(
+    app_config: AppConfig,
+    profile_name: str | None,
+) -> tuple[str, float, str]:
+    if profile_name is None:
+        return "4:3", 0.03, "near"
+    profile = app_config.profiles.get(profile_name)
+    if profile is None:
+        raise ConfigError(f"Missing profile '{profile_name}'")
+    return profile.scan_target_aspect_ratio, profile.scan_tolerance, profile.scan_match_mode
 
 
 @click.group()
@@ -170,6 +195,117 @@ def config_init(
 @main.group()
 def sonarr() -> None:
     """Sonarr commands."""
+
+
+@main.group()
+def scan() -> None:
+    """Read-only scan commands."""
+
+
+@scan.command("aspect")
+@click.option(
+    "--provider",
+    "provider_name",
+    type=click.Choice(SCAN_PROVIDER_CHOICES, case_sensitive=False),
+    default="all",
+    show_default=True,
+    help="Provider to scan.",
+)
+@click.option("--ratio", "ratio_value", default=None, help="Target aspect ratio, such as 4:3.")
+@click.option("--profile", "profile_name", default=None, help="Profile to read scan defaults from.")
+@click.option(
+    "--source",
+    type=click.Choice(ASPECT_SOURCE_CHOICES, case_sensitive=False),
+    default="provider",
+    show_default=True,
+    help="Metadata source for dimensions.",
+)
+@click.option("--tolerance", type=float, default=None, help="Aspect ratio tolerance.")
+@click.option(
+    "--match",
+    "match_mode",
+    type=click.Choice(ASPECT_MATCH_CHOICES, case_sensitive=False),
+    default=None,
+    help="Aspect match mode.",
+)
+@click.pass_obj
+def scan_aspect(
+    runtime: RuntimeContext,
+    provider_name: str,
+    ratio_value: str | None,
+    profile_name: str | None,
+    source: str,
+    tolerance: float | None,
+    match_mode: str | None,
+) -> None:
+    """Report media whose provider metadata matches an aspect ratio."""
+    try:
+        app_config = _get_config(runtime)
+        default_ratio, default_tolerance, default_match_mode = _profile_scan_defaults(
+            app_config,
+            profile_name,
+        )
+        target_ratio = parse_ratio(ratio_value or default_ratio)
+        effective_tolerance = default_tolerance if tolerance is None else tolerance
+        effective_match_mode = (match_mode or default_match_mode).casefold()
+
+        records: list[AspectScanRecord] = []
+        normalized_provider = provider_name.casefold()
+        if normalized_provider in ("sonarr", "all"):
+            sonarr_provider = SonarrProvider(
+                url=app_config.providers["sonarr"].url,
+                api_key=resolve_api_key(app_config, "sonarr"),
+            )
+            for series in sonarr_provider.list_series():
+                series_id = series.get("id")
+                if not isinstance(series_id, int):
+                    continue
+                records.extend(
+                    extract_sonarr_metadata(
+                        series=series,
+                        episodes=sonarr_provider.list_episodes(series_id),
+                        episode_files=sonarr_provider.list_episode_files(series_id),
+                    )
+                )
+        if normalized_provider in ("radarr", "all"):
+            radarr_provider = RadarrProvider(
+                url=app_config.providers["radarr"].url,
+                api_key=resolve_api_key(app_config, "radarr"),
+            )
+            for movie in radarr_provider.list_movies():
+                records.extend(extract_radarr_metadata(movie=movie))
+
+        if source.casefold() == "probe":
+            records = _probe_aspect_records(app_config, records)
+
+        matched = matching_records(
+            records,
+            target_ratio=target_ratio,
+            tolerance=effective_tolerance,
+            mode=effective_match_mode,
+        )
+    except (ValueError, WalkmarrError, ConfigError, ProviderError) as exc:
+        raise _as_click_error(exc) from exc
+
+    for line in format_tsv(matched, target_ratio=target_ratio):
+        click.echo(line)
+
+
+def _probe_aspect_records(
+    app_config: AppConfig,
+    records: list[AspectScanRecord],
+) -> list[AspectScanRecord]:
+    probed: list[AspectScanRecord] = []
+    for record in records:
+        local_path = map_remote_path_to_local(
+            record.path,
+            app_config.path_mappings,
+            allow_unmapped_existing_local=app_config.allow_unmapped_existing_local,
+        )
+        metadata = probe_aspect_metadata(local_path)
+        if metadata is not None:
+            probed.append(replace(record, metadata=metadata))
+    return probed
 
 
 @sonarr.command("list")

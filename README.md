@@ -166,6 +166,26 @@ uv run walkmarr radarr convert "American Psycho" --dry-run
 uv run walkmarr radarr convert "American Psycho"
 ```
 
+Read-only aspect-ratio scan examples:
+
+```bash
+uv run walkmarr scan aspect --provider all --ratio 4:3
+uv run walkmarr scan aspect --provider sonarr --profile animation
+uv run walkmarr scan aspect --provider radarr --match wider
+uv run walkmarr scan aspect --provider sonarr --source probe
+```
+
+`scan aspect` reads Sonarr/Radarr provider metadata by default and prints
+deterministic tab-separated rows for matching files. Use `--source probe` to map
+provider paths locally and ask `ffprobe` for display aspect-ratio metadata.
+Profile scan defaults are optional and default to:
+
+```yaml
+scan_target_aspect_ratio: "4:3"
+scan_tolerance: 0.03
+scan_match_mode: "near" # near, wider, taller, exact
+```
+
 Launch the TUI queue workflow:
 
 ```bash
