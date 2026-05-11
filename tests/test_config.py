@@ -73,6 +73,46 @@ overrides:
     assert resolve_api_key(config, "radarr") == "def"
 
 
+def test_legacy_video_bitrate_config_is_ignored(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "walkmarr.yml",
+        """
+providers:
+  sonarr:
+    url: "http://localhost:8989"
+    api_key: "x"
+  radarr:
+    url: "http://localhost:7878"
+    api_key: "y"
+path_mappings:
+  - remote: "/tv"
+    local: "/mnt/z/shows"
+output_roots:
+  shows: "/mnt/d/ipod/shows"
+  movies: "/mnt/d/ipod/movies"
+default_profiles:
+  sonarr: "animation"
+  radarr: "animation"
+profiles:
+  animation:
+    crf: 30
+    video_bitrate_kbps: 500
+    maxrate_floor_kbps: 250
+    maxrate_cap_kbps: 1200
+    bitrate_multiplier: 1.5
+    audio_bitrate_mono_kbps: 64
+    audio_bitrate_stereo_kbps: 96
+    max_width: 640
+    h264_profile: "baseline"
+    h264_level: "3.0"
+""",
+    )
+
+    _, config = load_config(cfg_path)
+
+    assert not hasattr(config.profiles["animation"], "video_bitrate_kbps")
+
+
 def test_missing_profile_error(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path / "walkmarr.yml",
