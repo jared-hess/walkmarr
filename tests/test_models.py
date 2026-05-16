@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from walkmarr.models import MediaItem
+from walkmarr.models import MediaItem, QueueItem, QueueItemStatus
 
 
 def test_media_item_episode_shape() -> None:
@@ -33,3 +33,15 @@ def test_media_item_movie_shape() -> None:
     assert item.kind == "movie"
     assert item.movie_title == "American Psycho"
     assert item.year == 2000
+
+
+def test_queue_item_defaults() -> None:
+    item = QueueItem(
+        id="q1",
+        provider="sonarr",
+        provider_item_id=42,
+        title="Futurama",
+    )
+    assert item.status == QueueItemStatus.PENDING
+    assert item.mode == "missing_only"
+    assert item.completed_files == 0

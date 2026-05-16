@@ -88,13 +88,17 @@ def build_tv_output_path(
     season_number: int,
     episode_number: int,
     episode_title: str,
+    episode_end_number: int | None = None,
 ) -> Path:
     """Build output path for a TV episode."""
     safe_series = sanitize_path_component(series_title)
     safe_episode_title = sanitize_path_component(episode_title)
     season_dir = output_root / safe_series / f"Season {season_number}"
+    episode_token = f"S{season_number:02d}E{episode_number:02d}"
+    if episode_end_number is not None and episode_end_number > episode_number:
+        episode_token = f"S{season_number:02d}E{episode_number:02d}-E{episode_end_number:02d}"
     filename = (
-        f"{safe_series} - S{season_number:02d}E{episode_number:02d} - "
+        f"{safe_series} - {episode_token} - "
         f"{safe_episode_title}.mp4"
     )
     return season_dir / filename

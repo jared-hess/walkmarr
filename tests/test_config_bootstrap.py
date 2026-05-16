@@ -15,6 +15,33 @@ def test_bootstrap_writes_config(tmp_path: Path) -> None:
     assert target in written
     parsed = yaml.safe_load(target.read_text(encoding="utf-8"))
     assert parsed["providers"]["sonarr"]["url"] == "http://localhost:8989"
+    assert "video_bitrate_kbps" not in parsed["profiles"]["animation"]
+    assert "video_bitrate_kbps" not in parsed["profiles"]["live_action"]
+    assert "video_bitrate_kbps" not in parsed["profiles"]["movie"]
+    assert parsed["profiles"]["animation"]["scan_target_aspect_ratio"] == "4:3"
+    assert parsed["profiles"]["animation"]["scan_tolerance"] == 0.03
+    assert parsed["profiles"]["animation"]["scan_match_mode"] == "near"
+
+
+def test_bootstrap_writes_artwork_defaults(tmp_path: Path) -> None:
+    target = tmp_path / "walkmarr" / "config.yml"
+    payload = default_bootstrap_payload()
+
+    bootstrap_config(target, payload=payload, force=False)
+    parsed = yaml.safe_load(target.read_text(encoding="utf-8"))
+
+    assert parsed["artwork"]["enabled"] is True
+    itunes_provider = parsed["artwork"]["providers"]["itunes_tv_season"]
+    assert itunes_provider["enabled"] is True
+    assert itunes_provider["apply_to"] == ["tv"]
+    assert itunes_provider["country"] == "US"
+    assert itunes_provider["image_size"] == 320
+    assert itunes_provider["timeout_seconds"] == 10
+    assert "cache_enabled" not in itunes_provider
+    assert "cache_dir" not in itunes_provider
+    assert itunes_provider["minimum_confidence"] == "parsed"
+    assert itunes_provider["sonarr_fallback"]["enabled"] is True
+    assert itunes_provider["radarr_fallback"]["enabled"] is True
 
 
 def test_bootstrap_refuses_overwrite_without_force(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 from pathlib import Path
 from io import StringIO
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -74,24 +75,45 @@ def test_process_media_items_handles_batch(
 
     def _fake_build_ffmpeg(
         source_path: Path,
-        tmp_output_path: Path,
+        staging_directory: Path,
         profile: VideoProfile,
         probe: object,
     ) -> ConversionPlan:
-        del source_path, profile, probe
+        del source_path, staging_directory, profile, probe
+        tmp_audio_wav_path = tmp_path / "staging" / "fake.audio.wav"
+        tmp_audio_m4a_path = tmp_path / "staging" / "fake.audio.m4a"
+        tmp_output_path = tmp_path / "staging" / "fake.tmp.mp4"
         return ConversionPlan(
-            command=["ffmpeg", "-crf", "30", str(tmp_output_path)],
+            audio_wav_command=["ffmpeg", "-o", str(tmp_audio_wav_path)],
+            fdkaac_command=["fdkaac", "-o", str(tmp_audio_m4a_path), str(tmp_audio_wav_path)],
+            video_mux_command=["ffmpeg", "-o", str(tmp_output_path)],
+            tmp_audio_wav_path=tmp_audio_wav_path,
+            tmp_audio_m4a_path=tmp_audio_m4a_path,
+            tmp_output_path=tmp_output_path,
             source_video_bitrate_kbps=1000,
             selected_audio_index=1,
             selected_audio_language="eng",
-            maxrate_kbps=1200,
+            crf=30,
+            maxrate_kbps=768,
+            bufsize_kbps=1500,
             audio_channels=2,
-            audio_bitrate_kbps=96,
-            filter_expr="scale='min(640,iw)':-2",
+            audio_bitrate_kbps=160,
+            filter_expr="scale=320:240:force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1",
         )
 
-    monkeypatch.setattr("walkmarr.process.build_ffmpeg_command", _fake_build_ffmpeg)
+    monkeypatch.setattr("walkmarr.process.build_ipod_conversion_plan", _fake_build_ffmpeg)
     monkeypatch.setattr("walkmarr.process.run_atomicparsley", lambda _cmd: None)
+    monkeypatch.setattr(
+        "walkmarr.process.validate_encoded_output",
+        lambda _source, _output: SimpleNamespace(
+            source_duration_seconds=100.0,
+            output_duration_seconds=100.0,
+            allowed_shortfall_seconds=5.0,
+            allowed_overage_seconds=10.0,
+            output_size_bytes=2_000_000,
+            minimum_size_bytes=1_000_000,
+        ),
+    )
 
     def _fake_run_ffmpeg(command: list[str]) -> None:
         out_path = Path(command[-1])
@@ -99,6 +121,7 @@ def test_process_media_items_handles_batch(
         out_path.write_bytes(b"converted")
 
     monkeypatch.setattr("walkmarr.process.run_ffmpeg", _fake_run_ffmpeg)
+    monkeypatch.setattr("walkmarr.process._run_command_with_cancellation", lambda _cmd, _label, _token: None)
 
     result = process_media_items(
         config=config,

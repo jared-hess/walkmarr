@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-import warnings
 
 import requests
 
@@ -35,6 +35,13 @@ class SonarrProvider:
         if not isinstance(payload, list):
             raise ProviderError("Sonarr returned unexpected series payload")
         return [item for item in payload if isinstance(item, dict)]
+
+    def get_series_by_id(self, series_id: int) -> dict[str, Any]:
+        """Fetch one Sonarr series by ID."""
+        payload = self._get_json(f"/api/v3/series/{series_id}")
+        if not isinstance(payload, dict):
+            raise ProviderError(f"Sonarr returned unexpected series payload for id {series_id}")
+        return payload
 
     def match_series(self, title: str, series_list: list[dict[str, Any]]) -> dict[str, Any]:
         """Match a series by exact title first, then case-insensitive title."""
@@ -79,6 +86,9 @@ class SonarrProvider:
         profile_name: str,
         path_mappings: list[PathMapping],
         output_root: Path,
+        series_id: int | None = None,
+        series_genre: str | None = None,
+        series_artwork_url: str | None = None,
         allow_unmapped_existing_local: bool = False,
     ) -> list[MediaItem]:
         """Build normalized MediaItem list from Sonarr episode metadata."""
@@ -101,17 +111,11 @@ class SonarrProvider:
             if not related_episodes:
                 continue
 
-            if len(related_episodes) > 1:
-                warnings.warn(
-                    "Multi-episode file detected in Sonarr; using first episode metadata. "
-                    "TODO: add full multi-episode support.",
-                    stacklevel=2,
-                )
-
-            selected_episode = sorted(
+            sorted_related_episodes = sorted(
                 related_episodes,
                 key=lambda ep: (int(ep.get("seasonNumber", 0)), int(ep.get("episodeNumber", 0))),
-            )[0]
+            )
+            selected_episode = sorted_related_episodes[0]
 
             remote_path = file_record.get("path")
             if not isinstance(remote_path, str) or not remote_path:
@@ -125,7 +129,21 @@ class SonarrProvider:
 
             season = int(selected_episode.get("seasonNumber", 0))
             episode_num = int(selected_episode.get("episodeNumber", 0))
+            episode_end_num: int | None = None
+            if len(sorted_related_episodes) > 1:
+                same_season_episodes = [
+                    int(ep.get("episodeNumber", episode_num))
+                    for ep in sorted_related_episodes
+                    if int(ep.get("seasonNumber", season)) == season
+                ]
+                if same_season_episodes:
+                    candidate_end = max(same_season_episodes)
+                    if candidate_end > episode_num:
+                        episode_end_num = candidate_end
             episode_title = str(selected_episode.get("title", ""))
+            air_date = _extract_iso_date(selected_episode.get("airDate"))
+            if air_date is None:
+                air_date = _extract_iso_date(selected_episode.get("airDateUtc"))
 
             output_path = build_tv_output_path(
                 output_root=output_root,
@@ -133,7 +151,12 @@ class SonarrProvider:
                 season_number=season,
                 episode_number=episode_num,
                 episode_title=episode_title,
+                episode_end_number=episode_end_num,
             )
+
+            episode_id = f"S{season:02d}E{episode_num:02d}"
+            if episode_end_num is not None:
+                episode_id = f"S{season:02d}E{episode_num:02d}-E{episode_end_num:02d}"
 
             items.append(
                 MediaItem(
@@ -143,10 +166,15 @@ class SonarrProvider:
                     profile_name=profile_name,
                     title=episode_title,
                     remote_source_path=remote_path,
+                    provider_item_id=series_id,
                     series_title=series_title,
                     season_number=season,
                     episode_number=episode_num,
-                    episode_id=f"S{season:02d}E{episode_num:02d}",
+                    episode_end_number=episode_end_num,
+                    episode_id=episode_id,
+                    air_date=air_date,
+                    genre=series_genre,
+                    artwork_url=series_artwork_url,
                 )
             )
 
@@ -158,6 +186,10 @@ class SonarrProvider:
                 item.episode_number or 0,
             ),
         )
+
+    def poster_url(self, series: dict[str, Any]) -> str | None:
+        """Return the best poster URL from a Sonarr series payload."""
+        return _poster_url(series, self.url)
 
     def _get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
         headers = {"X-Api-Key": self.api_key}
@@ -174,3 +206,55 @@ class SonarrProvider:
             return response.json()
         except ValueError as exc:
             raise ProviderError(f"Sonarr returned non-JSON response for {path}") from exc
+
+
+def _extract_iso_date(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) >= 10 and cleaned[4] == "-" and cleaned[7] == "-":
+        candidate = cleaned[:10]
+        try:
+            datetime.strptime(candidate, "%Y-%m-%d")
+        except ValueError:
+            return None
+        return candidate
+    return None
+
+
+def _poster_url(payload: dict[str, Any], base_url: str) -> str | None:
+    images = payload.get("images")
+    if not isinstance(images, list):
+        return None
+
+    poster_images = [image for image in images if _image_cover_type(image) == "poster"]
+    for image in [*poster_images, *images]:
+        if not isinstance(image, dict):
+            continue
+        url = _image_url(image, base_url)
+        if url is not None:
+            return url
+    return None
+
+
+def _image_cover_type(image: object) -> str | None:
+    if not isinstance(image, dict):
+        return None
+    cover_type = image.get("coverType")
+    if not isinstance(cover_type, str):
+        return None
+    return cover_type.casefold().strip()
+
+
+def _image_url(image: dict[object, object], base_url: str) -> str | None:
+    for key in ("remoteUrl", "url"):
+        value = image.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        cleaned = value.strip()
+        if cleaned.startswith("http://") or cleaned.startswith("https://"):
+            return cleaned
+        return f"{base_url}/{cleaned.lstrip('/')}"
+    return None

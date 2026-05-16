@@ -56,6 +56,18 @@ def test_list_series() -> None:
     assert [s["title"] for s in series] == ["Futurama", "The Simpsons"]
 
 
+def test_get_series_by_id() -> None:
+    session = FakeSession(
+        {
+            ("http://localhost:8989/api/v3/series/1", ()): {"id": 1, "title": "Futurama"}
+        }
+    )
+    provider = _provider(session)
+    series = provider.get_series_by_id(1)
+    assert series["id"] == 1
+    assert series["title"] == "Futurama"
+
+
 def test_exact_title_match() -> None:
     provider = _provider(FakeSession({}))
     matched = provider.match_series(
@@ -88,6 +100,7 @@ def test_build_episode_media_items() -> None:
             "title": "Space Pilot 3000",
             "seasonNumber": 1,
             "episodeNumber": 1,
+            "airDate": "1999-03-28",
             "hasFile": True,
             "episodeFileId": 201,
         }
@@ -100,6 +113,9 @@ def test_build_episode_media_items() -> None:
         profile_name="animation",
         path_mappings=[PathMapping(remote="Z:/shows", local=Path("/mnt/z/shows"))],
         output_root=Path("/mnt/d/ipod/shows"),
+        series_id=42,
+        series_genre="Animation",
+        series_artwork_url="https://image.example/futurama-poster.jpg",
     )
 
     assert len(items) == 1
@@ -109,3 +125,64 @@ def test_build_episode_media_items() -> None:
         "/mnt/d/ipod/shows/Futurama/Season 1/Futurama - S01E01 - Space Pilot 3000.mp4"
     )
     assert item.title == "Space Pilot 3000"
+    assert item.provider_item_id == 42
+    assert item.season_number == 1
+    assert item.air_date == "1999-03-28"
+    assert item.genre == "Animation"
+    assert item.artwork_url == "https://image.example/futurama-poster.jpg"
+
+
+def test_series_poster_url_prefers_poster_image() -> None:
+    provider = _provider(FakeSession({}))
+    url = provider.poster_url(
+        {
+            "title": "Futurama",
+            "images": [
+                {"coverType": "banner", "remoteUrl": "https://image.example/banner.jpg"},
+                {"coverType": "poster", "remoteUrl": "https://image.example/poster.jpg"},
+            ],
+        }
+    )
+    assert url == "https://image.example/poster.jpg"
+
+
+def test_build_episode_media_items_multi_episode_range() -> None:
+    provider = _provider(FakeSession({}))
+    episodes = [
+        {
+            "id": 101,
+            "title": "Part 1",
+            "seasonNumber": 1,
+            "episodeNumber": 1,
+            "hasFile": True,
+            "episodeFileId": 201,
+        },
+        {
+            "id": 102,
+            "title": "Part 2",
+            "seasonNumber": 1,
+            "episodeNumber": 2,
+            "hasFile": True,
+            "episodeFileId": 201,
+        },
+    ]
+    episode_files = [{"id": 201, "path": "Z:/shows/Futurama/Season 1/S01E01E02.mkv"}]
+    items = provider.build_media_items(
+        series_title="Futurama",
+        episodes=episodes,
+        episode_files=episode_files,
+        profile_name="animation",
+        path_mappings=[PathMapping(remote="Z:/shows", local=Path("/mnt/z/shows"))],
+        output_root=Path("/mnt/d/ipod/shows"),
+        series_id=42,
+    )
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.provider_item_id == 42
+    assert item.season_number == 1
+    assert item.episode_id == "S01E01-E02"
+    assert item.episode_end_number == 2
+    assert item.output_path == Path(
+        "/mnt/d/ipod/shows/Futurama/Season 1/Futurama - S01E01-E02 - Part 1.mp4"
+    )

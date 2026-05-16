@@ -36,3 +36,15 @@ def test_padding_and_sanitization_for_tv() -> None:
         episode_title="Ep/Name\\Cut...",
     )
     assert path == Path("/out/A-B-C/Season 3/A-B-C - S03E09 - Ep-Name-Cut.mp4")
+
+
+def test_tv_output_path_multi_episode_range() -> None:
+    path = build_tv_output_path(
+        output_root=Path("/out"),
+        series_title="Show",
+        season_number=1,
+        episode_number=1,
+        episode_end_number=2,
+        episode_title="Pilot",
+    )
+    assert path == Path("/out/Show/Season 1/Show - S01E01-E02 - Pilot.mp4")

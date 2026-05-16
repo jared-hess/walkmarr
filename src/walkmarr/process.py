@@ -3,23 +3,32 @@
 from __future__ import annotations
 
 import hashlib
+import errno
+from importlib import import_module
+import logging
 import queue
 import shutil
 import shlex
+import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable, Literal, TextIO, cast
+from urllib.parse import urlparse
 
+import requests
 from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 
 from walkmarr.config import sonarr_specials_show_name
 from walkmarr.convert.video import (
     ConversionPlan,
-    build_ffmpeg_command,
+    build_ipod_conversion_plan,
     probe_media,
     require_binary,
     run_ffmpeg,
+    validate_encoded_output,
 )
 from walkmarr.exceptions import ConversionError, TaggingError, WalkmarrError
 from walkmarr.models import AppConfig, MediaItem, VideoProfile
@@ -29,6 +38,11 @@ from walkmarr.tag.mp4 import (
     detect_atomicparsley_binary,
     run_atomicparsley,
 )
+
+
+LOGGER = logging.getLogger("walkmarr")
+MAX_CAPTURED_SUBPROCESS_LINES = 400
+itunes = cast(Any, import_module("walkmarr.artwork.itunes"))
 
 
 @dataclass(frozen=True)
@@ -45,6 +59,54 @@ class BatchProcessResult:
 
     converted: int
     skipped: int
+    failed: int = 0
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """Structured progress message for queue-aware UIs."""
+
+    level: Literal["debug", "info", "warning", "error", "success"]
+    message: str
+    queue_item_id: str | None = None
+    provider: Literal["sonarr", "radarr"] | None = None
+    current_index: int | None = None
+    total: int | None = None
+    current_stage: Literal[
+        "queued",
+        "expanding",
+        "probing",
+        "converting",
+        "tagging",
+        "skipping",
+        "complete",
+        "failed",
+        "canceled",
+    ] | None = None
+    item: MediaItem | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedTagArtwork:
+    """Artwork selected for tagging plus temp files owned by the conversion."""
+
+    artwork_path: Path | None
+    temp_raw_path: Path | None = None
+    temp_artwork_path: Path | None = None
+
+
+class CancellationToken:
+    """Thread-safe cancellation token for long-running conversions."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def is_canceled(self) -> bool:
+        return self._event.is_set()
 
 
 @dataclass(frozen=True)
@@ -63,6 +125,12 @@ def ensure_required_tools() -> str:
     """Ensure required binaries are present and return AtomicParsley name."""
     require_binary("ffmpeg")
     require_binary("ffprobe")
+    if shutil.which("fdkaac") is None:
+        raise ConversionError(
+            "fdkaac is required for the default Linux iPod encode path.\n\n"
+            "Install it with:\n"
+            "  sudo apt install fdkaac"
+        )
     return detect_atomicparsley_binary()
 
 
@@ -76,6 +144,11 @@ def process_media_item(
     console: Console,
     dry_run: bool,
     overwrite: bool,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
+    cancellation_token: CancellationToken | None = None,
+    queue_item_id: str | None = None,
+    item_index: int | None = None,
+    item_total: int | None = None,
 ) -> ProcessResult:
     """Process one media item through inspect, convert, tag, and finalize."""
     if not media_item.source_path.exists():
@@ -98,6 +171,11 @@ def process_media_item(
             console=console,
             dry_run=dry_run,
             overwrite=overwrite,
+            progress_callback=progress_callback,
+            cancellation_token=cancellation_token,
+            queue_item_id=queue_item_id,
+            item_index=item_index,
+            item_total=item_total,
         )
     finally:
         _cleanup_staged_file(prepared)
@@ -113,39 +191,89 @@ def process_media_items(
     console: Console,
     dry_run: bool,
     overwrite: bool,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
+    cancellation_token: CancellationToken | None = None,
+    queue_item_id: str | None = None,
+    continue_on_error: bool = False,
+    pause_callback: Callable[[], None] | None = None,
 ) -> BatchProcessResult:
     """Process a list of media items with stage/convert overlap."""
     if dry_run or len(media_items) <= 1:
         converted = 0
         skipped = 0
-        for item in media_items:
-            result = process_media_item(
-                config=config,
-                media_item=item,
-                provider_name=provider_name,
-                profile=profile,
-                atomicparsley_bin=atomicparsley_bin,
-                console=console,
-                dry_run=dry_run,
-                overwrite=overwrite,
-            )
+        failed = 0
+        total = len(media_items)
+        for idx, item in enumerate(media_items, start=1):
+            if pause_callback is not None:
+                pause_callback()
+            if cancellation_token is not None and cancellation_token.is_canceled:
+                _emit_progress(
+                    progress_callback,
+                    level="warning",
+                    message="Canceled before next file",
+                    queue_item_id=queue_item_id,
+                    provider=provider_name,
+                    current_index=idx,
+                    total=total,
+                    current_stage="canceled",
+                    item=item,
+                )
+                raise WalkmarrError("Conversion canceled")
+            try:
+                result = process_media_item(
+                    config=config,
+                    media_item=item,
+                    provider_name=provider_name,
+                    profile=profile,
+                    atomicparsley_bin=atomicparsley_bin,
+                    console=console,
+                    dry_run=dry_run,
+                    overwrite=overwrite,
+                    progress_callback=progress_callback,
+                    cancellation_token=cancellation_token,
+                    queue_item_id=queue_item_id,
+                    item_index=idx,
+                    item_total=total,
+                )
+            except Exception as exc:
+                failed += 1
+                _emit_progress(
+                    progress_callback,
+                    level="error",
+                    message=str(exc),
+                    queue_item_id=queue_item_id,
+                    provider=provider_name,
+                    current_index=idx,
+                    total=total,
+                    current_stage="failed",
+                    item=item,
+                )
+                if continue_on_error:
+                    continue
+                raise
+
             if result.status in {"converted", "dry-run"}:
                 converted += 1
             else:
                 skipped += 1
-        return BatchProcessResult(converted=converted, skipped=skipped)
+        return BatchProcessResult(converted=converted, skipped=skipped, failed=failed)
 
     work_queue: queue.Queue[PreparedMediaItem | object] = queue.Queue(maxsize=1)
     sentinel = object()
     stop_event = threading.Event()
     result_lock = threading.Lock()
-    counts = {"converted": 0, "skipped": 0}
+    counts = {"converted": 0, "skipped": 0, "failed": 0}
     first_error: list[Exception] = []
 
     def stage_worker() -> None:
         try:
             for item in media_items:
+                if pause_callback is not None:
+                    pause_callback()
                 if stop_event.is_set():
+                    break
+                if cancellation_token is not None and cancellation_token.is_canceled:
+                    stop_event.set()
                     break
                 prepared = _prepare_media_item(
                     config=config,
@@ -153,6 +281,7 @@ def process_media_items(
                     console=console,
                     dry_run=False,
                     overwrite=overwrite,
+                    show_staging_progress=False,
                 )
                 if not _queue_put_with_stop(work_queue, prepared, stop_event):
                     _cleanup_staged_file(prepared)
@@ -174,9 +303,20 @@ def process_media_items(
 
             prepared = queued
             try:
+                if pause_callback is not None:
+                    pause_callback()
                 if prepared.skip_only:
                     with result_lock:
                         counts["skipped"] += 1
+                    _emit_progress(
+                        progress_callback,
+                        level="info",
+                        message=f"Skipping existing output for {prepared.media_item.title}",
+                        queue_item_id=queue_item_id,
+                        provider=provider_name,
+                        current_stage="skipping",
+                        item=prepared.media_item,
+                    )
                     continue
 
                 if stop_event.is_set():
@@ -191,6 +331,9 @@ def process_media_items(
                     console=console,
                     dry_run=False,
                     overwrite=overwrite,
+                    progress_callback=progress_callback,
+                    cancellation_token=cancellation_token,
+                    queue_item_id=queue_item_id,
                 )
                 with result_lock:
                     if result.status == "converted":
@@ -198,9 +341,21 @@ def process_media_items(
                     else:
                         counts["skipped"] += 1
             except Exception as exc:  # pragma: no cover - covered via integration flow
-                if not first_error:
-                    first_error.append(exc)
-                stop_event.set()
+                with result_lock:
+                    counts["failed"] += 1
+                _emit_progress(
+                    progress_callback,
+                    level="error",
+                    message=str(exc),
+                    queue_item_id=queue_item_id,
+                    provider=provider_name,
+                    current_stage="failed",
+                    item=prepared.media_item,
+                )
+                if not continue_on_error:
+                    if not first_error:
+                        first_error.append(exc)
+                    stop_event.set()
             finally:
                 _cleanup_staged_file(prepared)
 
@@ -222,7 +377,11 @@ def process_media_items(
             raise exc
         raise WalkmarrError(str(exc)) from exc
 
-    return BatchProcessResult(converted=counts["converted"], skipped=counts["skipped"])
+    return BatchProcessResult(
+        converted=counts["converted"],
+        skipped=counts["skipped"],
+        failed=counts["failed"],
+    )
 
 
 def _prepare_media_item(
@@ -232,6 +391,7 @@ def _prepare_media_item(
     console: Console,
     dry_run: bool,
     overwrite: bool,
+    show_staging_progress: bool = True,
 ) -> PreparedMediaItem:
     if not media_item.source_path.exists():
         raise WalkmarrError(f"Source file does not exist after mapping: {media_item.source_path}")
@@ -267,7 +427,12 @@ def _prepare_media_item(
         )
 
     try:
-        staged_source = stage_source_file(media_item.source_path, config.staging_directory, console)
+        staged_source = stage_source_file(
+            media_item.source_path,
+            config.staging_directory,
+            console,
+            show_progress=show_staging_progress,
+        )
     except OSError as exc:
         raise WalkmarrError(f"Failed to stage source file '{media_item.source_path}': {exc}") from exc
 
@@ -290,65 +455,608 @@ def _process_prepared_media_item(
     console: Console,
     dry_run: bool,
     overwrite: bool,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
+    cancellation_token: CancellationToken | None = None,
+    queue_item_id: str | None = None,
+    item_index: int | None = None,
+    item_total: int | None = None,
 ) -> ProcessResult:
     media_item = prepared.media_item
     final_output = media_item.output_path
 
     if prepared.skip_only:
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Skipping existing output for {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="skipping",
+            item=media_item,
+        )
         return ProcessResult(status="skipped", output_path=final_output)
 
     if final_output.exists() and not overwrite:
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Skipping existing output for {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="skipping",
+            item=media_item,
+        )
         return ProcessResult(status="skipped", output_path=final_output)
 
+    _ensure_not_canceled(cancellation_token)
+    _emit_progress(
+        progress_callback,
+        level="info",
+        message=f"Probing {media_item.title}",
+        queue_item_id=queue_item_id,
+        provider=provider_name,
+        current_index=item_index,
+        total=item_total,
+        current_stage="probing",
+        item=media_item,
+    )
     probe = probe_media(prepared.probe_source_path)
-    tmp_output = final_output.with_name(f"{final_output.stem}.tmp.mp4")
-    ffmpeg_plan = build_ffmpeg_command(
+    conversion_plan = build_ipod_conversion_plan(
         source_path=prepared.processing_source_path,
-        tmp_output_path=tmp_output,
+        staging_directory=config.staging_directory,
         profile=profile,
         probe=probe,
     )
-    tag_command, metadata = _build_tag_command(
-        config=config,
-        media_item=media_item,
-        atomicparsley_bin=atomicparsley_bin,
-        media_path=tmp_output,
-    )
+    tmp_output = conversion_plan.tmp_output_path
 
-    _print_conversion_plan(
-        console=console,
-        media_item=media_item,
-        provider_name=provider_name,
-        metadata=metadata,
-        ffmpeg_plan=ffmpeg_plan,
-        tag_command=tag_command,
-        staging_applied=prepared.staging_applied,
-        staging_path=prepared.processing_source_path if prepared.staging_applied else None,
+    LOGGER.info(
+        "Processing item provider=%s source=%s mapped=%s staged=%s temp_output=%s final_output=%s",
+        provider_name,
+        media_item.remote_source_path or str(media_item.source_path),
+        media_item.source_path,
+        prepared.processing_source_path,
+        tmp_output,
+        final_output,
     )
-
+    LOGGER.info("audio wav command: %s", shlex.join(conversion_plan.audio_wav_command))
+    LOGGER.info("fdkaac command: %s", shlex.join(conversion_plan.fdkaac_command))
+    LOGGER.info("video mux command: %s", shlex.join(conversion_plan.video_mux_command))
     if dry_run:
+        tag_command, metadata = _build_tag_command(
+            config=config,
+            media_item=media_item,
+            atomicparsley_bin=atomicparsley_bin,
+            media_path=tmp_output,
+            artwork_path=None,
+        )
+        LOGGER.info("tag command: %s", shlex.join(tag_command))
+        _print_conversion_plan(
+            console=console,
+            media_item=media_item,
+            provider_name=provider_name,
+            metadata=metadata,
+            conversion_plan=conversion_plan,
+            tag_command=tag_command,
+            staging_applied=prepared.staging_applied,
+            staging_path=prepared.processing_source_path if prepared.staging_applied else None,
+            artwork_priority=_intended_artwork_priority(media_item, provider_name),
+        )
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Dry run complete for {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="complete",
+            item=media_item,
+        )
         return ProcessResult(status="dry-run", output_path=final_output)
 
+    resolved_artwork = ResolvedTagArtwork(artwork_path=None)
+    artwork_raw_path: Path | None = None
+    artwork_path: Path | None = None
     final_output.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output.parent.mkdir(parents=True, exist_ok=True)
     if tmp_output.exists():
         tmp_output.unlink()
 
     try:
-        run_ffmpeg(ffmpeg_plan.command)
-        run_atomicparsley(tag_command)
-        tmp_output.replace(final_output)
+        resolved_artwork = _resolve_tag_artwork(
+            config=config,
+            media_item=media_item,
+            provider_name=provider_name,
+            cancellation_token=cancellation_token,
+        )
+        artwork_raw_path = resolved_artwork.temp_raw_path
+        artwork_path = resolved_artwork.temp_artwork_path
+        tag_command, metadata = _build_tag_command(
+            config=config,
+            media_item=media_item,
+            atomicparsley_bin=atomicparsley_bin,
+            media_path=tmp_output,
+            artwork_path=resolved_artwork.artwork_path,
+        )
+        LOGGER.info("tag command: %s", shlex.join(tag_command))
+        _print_conversion_plan(
+            console=console,
+            media_item=media_item,
+            provider_name=provider_name,
+            metadata=metadata,
+            conversion_plan=conversion_plan,
+            tag_command=tag_command,
+            staging_applied=prepared.staging_applied,
+            staging_path=prepared.processing_source_path if prepared.staging_applied else None,
+            artwork_priority=None,
+        )
+        _ensure_not_canceled(cancellation_token)
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Converting {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="converting",
+            item=media_item,
+        )
+        _run_ffmpeg_with_cancellation(conversion_plan.audio_wav_command, cancellation_token)
+        _run_command_with_cancellation(conversion_plan.fdkaac_command, "fdkaac", cancellation_token)
+        _run_ffmpeg_with_cancellation(conversion_plan.video_mux_command, cancellation_token)
+        validation = validate_encoded_output(prepared.processing_source_path, tmp_output)
+        LOGGER.info(
+            "Validation passed source=%.2fs output=%.2fs shortfall=%.2fs overage=%.2fs size=%s min_size=%s",
+            validation.source_duration_seconds,
+            validation.output_duration_seconds,
+            validation.allowed_shortfall_seconds,
+            validation.allowed_overage_seconds,
+            validation.output_size_bytes,
+            validation.minimum_size_bytes,
+        )
+        console.print("Validation passed:")
+        console.print(f"  Source duration: {validation.source_duration_seconds:.2f}s")
+        console.print(f"  Output duration: {validation.output_duration_seconds:.2f}s")
+        console.print(f"  Allowed shortfall: {validation.allowed_shortfall_seconds:.2f}s")
+        console.print(f"  Allowed overage: {validation.allowed_overage_seconds:.2f}s")
+        _ensure_not_canceled(cancellation_token)
+        _emit_progress(
+            progress_callback,
+            level="info",
+            message=f"Tagging {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="tagging",
+            item=media_item,
+        )
+        _run_atomicparsley_with_cancellation(tag_command, cancellation_token)
+        post_tag_validation = validate_encoded_output(prepared.processing_source_path, tmp_output)
+        LOGGER.info(
+            "Post-tag validation passed source=%.2fs output=%.2fs shortfall=%.2fs overage=%.2fs size=%s min_size=%s",
+            post_tag_validation.source_duration_seconds,
+            post_tag_validation.output_duration_seconds,
+            post_tag_validation.allowed_shortfall_seconds,
+            post_tag_validation.allowed_overage_seconds,
+            post_tag_validation.output_size_bytes,
+            post_tag_validation.minimum_size_bytes,
+        )
+        console.print("Post-tag validation passed:")
+        console.print(f"  Source duration: {post_tag_validation.source_duration_seconds:.2f}s")
+        console.print(f"  Output duration: {post_tag_validation.output_duration_seconds:.2f}s")
+        console.print(f"  Allowed shortfall: {post_tag_validation.allowed_shortfall_seconds:.2f}s")
+        console.print(f"  Allowed overage: {post_tag_validation.allowed_overage_seconds:.2f}s")
+        _promote_temp_output(tmp_output, final_output)
+        for tmp_intermediate in [conversion_plan.tmp_audio_wav_path, conversion_plan.tmp_audio_m4a_path]:
+            if tmp_intermediate.exists():
+                tmp_intermediate.unlink()
+        if artwork_path is not None and artwork_path.exists():
+            artwork_path.unlink()
+        if artwork_raw_path is not None and artwork_raw_path.exists():
+            artwork_raw_path.unlink()
+        _emit_progress(
+            progress_callback,
+            level="success",
+            message=f"Completed {media_item.title}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage="complete",
+            item=media_item,
+        )
     except (ConversionError, TaggingError, OSError) as exc:
-        if tmp_output.exists():
-            tmp_output.unlink()
+        if config.keep_failed_temps:
+            LOGGER.info("Keeping failed temp files because keep_failed_temps is enabled")
+        else:
+            if tmp_output.exists():
+                console.print(f"Removing failed temp output: {tmp_output}")
+                LOGGER.error("Removing failed temp output: %s", tmp_output)
+                tmp_output.unlink()
+            for tmp_intermediate in [conversion_plan.tmp_audio_wav_path, conversion_plan.tmp_audio_m4a_path]:
+                if tmp_intermediate.exists():
+                    tmp_intermediate.unlink()
+            if artwork_path is not None and artwork_path.exists():
+                artwork_path.unlink()
+            if artwork_raw_path is not None and artwork_raw_path.exists():
+                artwork_raw_path.unlink()
+        LOGGER.error(
+            "Failed temp paths: wav=%s m4a=%s mp4=%s artwork_raw=%s artwork=%s",
+            conversion_plan.tmp_audio_wav_path,
+            conversion_plan.tmp_audio_m4a_path,
+            tmp_output,
+            artwork_raw_path,
+            artwork_path,
+        )
+        LOGGER.error("Processing failed for %s: %s", media_item.source_path, exc)
+        stage = "canceled" if _is_cancellation_error(exc) else "failed"
+        level = "warning" if stage == "canceled" else "error"
+        _emit_progress(
+            progress_callback,
+            level=level,
+            message=f"Failed processing {media_item.title}: {exc}",
+            queue_item_id=queue_item_id,
+            provider=provider_name,
+            current_index=item_index,
+            total=item_total,
+            current_stage=stage,
+            item=media_item,
+        )
         raise WalkmarrError(f"Failed processing '{media_item.source_path}': {exc}") from exc
 
     return ProcessResult(status="converted", output_path=final_output)
+
+
+def _promote_temp_output(tmp_output: Path, final_output: Path) -> None:
+    """Copy validated output to the destination filesystem before final replace."""
+    digest = hashlib.sha1(str(tmp_output).encode("utf-8")).hexdigest()[:12]
+    promote_output = final_output.with_name(f".{final_output.name}.{digest}.promote-tmp")
+    if promote_output.exists():
+        promote_output.unlink()
+
+    try:
+        _ = shutil.copy2(tmp_output, promote_output)
+        _ = promote_output.replace(final_output)
+    except OSError:
+        if promote_output.exists():
+            promote_output.unlink()
+        raise
+
+    tmp_output.unlink()
 
 
 def _cleanup_staged_file(prepared: PreparedMediaItem) -> None:
     path = prepared.staged_file_path
     if path is not None and path.exists():
         path.unlink()
+
+
+def _emit_progress(
+    callback: Callable[[ProgressEvent], None] | None,
+    *,
+    level: Literal["debug", "info", "warning", "error", "success"],
+    message: str,
+    queue_item_id: str | None,
+    provider: str,
+    current_stage: Literal[
+        "queued",
+        "expanding",
+        "probing",
+        "converting",
+        "tagging",
+        "skipping",
+        "complete",
+        "failed",
+        "canceled",
+    ] | None,
+    item: MediaItem | None,
+    current_index: int | None = None,
+    total: int | None = None,
+) -> None:
+    if callback is None:
+        return
+    provider_value: Literal["sonarr", "radarr"] | None = None
+    if provider in {"sonarr", "radarr"}:
+        provider_value = cast(Literal["sonarr", "radarr"], provider)
+    callback(
+        ProgressEvent(
+            level=level,
+            message=message,
+            queue_item_id=queue_item_id,
+            provider=provider_value,
+            current_index=current_index,
+            total=total,
+            current_stage=current_stage,
+            item=item,
+        )
+    )
+
+
+def _ensure_not_canceled(cancellation_token: CancellationToken | None) -> None:
+    if cancellation_token is not None and cancellation_token.is_canceled:
+        raise ConversionError("Conversion canceled")
+
+
+def _is_cancellation_error(exc: Exception) -> bool:
+    return "canceled" in str(exc).casefold()
+
+
+def _run_ffmpeg_with_cancellation(
+    command: list[str],
+    cancellation_token: CancellationToken | None,
+) -> None:
+    if cancellation_token is None:
+        run_ffmpeg(command)
+        return
+    _run_subprocess_cancellable(command, "ffmpeg", cancellation_token)
+
+
+def _run_command_with_cancellation(
+    command: list[str],
+    label: str,
+    cancellation_token: CancellationToken | None,
+) -> None:
+    if cancellation_token is None:
+        subprocess.run(command, check=True)
+        return
+    _run_subprocess_cancellable(command, label, cancellation_token)
+
+
+def _run_atomicparsley_with_cancellation(
+    command: list[str],
+    cancellation_token: CancellationToken | None,
+) -> None:
+    if cancellation_token is None:
+        run_atomicparsley(command)
+        return
+    _run_subprocess_cancellable(command, command[0], cancellation_token)
+
+
+def _run_subprocess_cancellable(
+    command: list[str],
+    label: str,
+    cancellation_token: CancellationToken,
+) -> None:
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as exc:
+        raise ConversionError(f"{label} binary not found: {command[0]}") from exc
+
+    if process.stdout is None or process.stderr is None:
+        raise ConversionError(f"{label} did not expose output streams")
+
+    stdout_thread = threading.Thread(
+        target=_stream_subprocess_output,
+        args=(process.stdout, f"{label} stdout", logging.DEBUG, stdout_lines),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_stream_subprocess_output,
+        args=(process.stderr, f"{label} stderr", logging.INFO, stderr_lines),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    while True:
+        if cancellation_token.is_canceled:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            stdout_thread.join(timeout=1)
+            stderr_thread.join(timeout=1)
+            raise ConversionError("Conversion canceled")
+        return_code = process.poll()
+        if return_code is not None:
+            stdout_thread.join(timeout=1)
+            stderr_thread.join(timeout=1)
+            LOGGER.info("%s return code: %s", label, return_code)
+            if return_code != 0:
+                stderr_tail = " | ".join(stderr_lines[-8:]) if stderr_lines else "no stderr output"
+                if label.casefold().startswith("ffmpeg"):
+                    raise ConversionError(
+                        f"ffmpeg conversion failed with exit code {return_code}: {stderr_tail}"
+                    )
+                raise TaggingError(
+                    f"AtomicParsley failed with exit code {return_code}: {stderr_tail}"
+                )
+            return
+        time.sleep(0.1)
+
+
+def _stream_subprocess_output(
+    stream: TextIO,
+    label: str,
+    level: int,
+    collector: list[str],
+) -> None:
+    try:
+        for line in iter(stream.readline, ""):
+            cleaned = line.rstrip("\r\n")
+            if not cleaned:
+                continue
+            if len(collector) < MAX_CAPTURED_SUBPROCESS_LINES:
+                collector.append(cleaned)
+            LOGGER.log(level, "%s: %s", label, cleaned)
+    finally:
+        stream.close()
+
+
+def _artwork_raw_temp_path(staging_directory: Path, artwork_url: str | None) -> Path | None:
+    if artwork_url is None:
+        return None
+    digest = hashlib.sha1(artwork_url.encode("utf-8")).hexdigest()[:12]
+    suffix = Path(urlparse(artwork_url).path).suffix.casefold()
+    if suffix not in {".jpg", ".jpeg", ".png"}:
+        suffix = ".jpg"
+    return staging_directory / f"artwork.{digest}.raw{suffix}"
+
+
+def _artwork_jpeg_temp_path(staging_directory: Path, artwork_url: str | None) -> Path | None:
+    if artwork_url is None:
+        return None
+    digest = hashlib.sha1(artwork_url.encode("utf-8")).hexdigest()[:12]
+    return staging_directory / f"artwork.{digest}.320x320.jpg"
+
+
+def _itunes_artwork_temp_path(
+    staging_directory: Path,
+    *,
+    series_id: int | str | None,
+    season_number: int | None,
+    image_size: int,
+) -> Path:
+    key = f"sonarr:{series_id}:season:{season_number}:itunes:{image_size}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+    return staging_directory / f"artwork.{digest}.itunes.{image_size}x{image_size}.jpg"
+
+
+def _intended_artwork_priority(media_item: MediaItem, provider_name: str) -> str | None:
+    if media_item.kind == "episode" and provider_name == "sonarr":
+        return "iTunes TV season artwork, then provider fallback artwork, then no artwork"
+    if media_item.artwork_url is not None:
+        return "provider fallback artwork, then no artwork"
+    return "no artwork"
+
+
+def _resolve_tag_artwork(
+    *,
+    config: AppConfig,
+    media_item: MediaItem,
+    provider_name: str,
+    cancellation_token: CancellationToken | None,
+) -> ResolvedTagArtwork:
+    fallback_enabled = _provider_fallback_artwork_enabled(config, provider_name)
+    fallback_raw_path = (
+        _artwork_raw_temp_path(config.staging_directory, media_item.artwork_url)
+        if fallback_enabled
+        else None
+    )
+    fallback_artwork_path = (
+        _artwork_jpeg_temp_path(config.staging_directory, media_item.artwork_url)
+        if fallback_enabled
+        else None
+    )
+
+    if config.artwork.enabled and media_item.kind == "episode" and provider_name == "sonarr":
+        provider_config = config.artwork.providers.get("itunes_tv_season")
+        image_size = provider_config.image_size if provider_config is not None else 320
+        itunes_artwork_path = _itunes_artwork_temp_path(
+            config.staging_directory,
+            series_id=media_item.provider_item_id,
+            season_number=media_item.season_number,
+            image_size=image_size,
+        )
+        resolution = itunes.resolve_itunes_tv_season_artwork(
+            config=config,
+            provider_kind=provider_name,
+            series_id=media_item.provider_item_id,
+            series_title=media_item.series_title,
+            season_number=media_item.season_number,
+            fallback_artwork=fallback_artwork_path,
+            staging_artwork_path=itunes_artwork_path,
+            dry_run=False,
+            download_artwork=_download_artwork,
+            normalize_artwork=_normalize_artwork,
+            cancellation_token=cancellation_token,
+        )
+        if resolution.source == "itunes" and resolution.artwork is not None:
+            return ResolvedTagArtwork(
+                artwork_path=Path(resolution.artwork),
+                temp_artwork_path=Path(resolution.artwork),
+            )
+
+    if media_item.artwork_url is None or fallback_raw_path is None or fallback_artwork_path is None:
+        return ResolvedTagArtwork(artwork_path=None)
+
+    try:
+        _download_artwork(media_item.artwork_url, fallback_raw_path)
+        _normalize_artwork(fallback_raw_path, fallback_artwork_path, cancellation_token)
+    except Exception as exc:  # noqa: BLE001 - provider fallback artwork is optional.
+        LOGGER.info(
+            "Provider fallback artwork unavailable for %s; tagging without artwork: %s",
+            media_item.artwork_url,
+            exc,
+        )
+        for temp_path in (fallback_artwork_path, fallback_raw_path):
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                LOGGER.info("Provider fallback artwork temp cleanup failed for %s: %s", temp_path, cleanup_exc)
+        return ResolvedTagArtwork(artwork_path=None)
+
+    return ResolvedTagArtwork(
+        artwork_path=fallback_artwork_path,
+        temp_raw_path=fallback_raw_path,
+        temp_artwork_path=fallback_artwork_path,
+    )
+
+
+def _provider_fallback_artwork_enabled(config: AppConfig, provider_name: str) -> bool:
+    if not config.artwork.enabled:
+        return False
+
+    itunes_config = config.artwork.providers.get("itunes_tv_season")
+    if itunes_config is None:
+        return True
+    if provider_name == "sonarr":
+        return itunes_config.sonarr_fallback.enabled
+    if provider_name == "radarr":
+        return itunes_config.radarr_fallback.enabled
+    return False
+
+
+def _download_artwork(artwork_url: str, artwork_path: Path) -> None:
+    artwork_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        response = requests.get(artwork_url, timeout=20.0)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise TaggingError(f"Artwork download failed for {artwork_url}: {exc}") from exc
+
+    if not response.content:
+        raise TaggingError(f"Artwork download returned empty content for {artwork_url}")
+    artwork_path.write_bytes(response.content)
+
+
+def _normalize_artwork(
+    artwork_raw_path: Path,
+    artwork_path: Path,
+    cancellation_token: CancellationToken | None,
+) -> None:
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(artwork_raw_path),
+        "-vf",
+        "scale=320:320:force_original_aspect_ratio=decrease,"
+        "pad=320:320:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1",
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        str(artwork_path),
+    ]
+    _run_ffmpeg_with_cancellation(command, cancellation_token)
 
 
 def _queue_put_with_stop(
@@ -372,6 +1080,7 @@ def _build_tag_command(
     media_item: MediaItem,
     atomicparsley_bin: str,
     media_path: Path,
+    artwork_path: Path | None = None,
 ) -> tuple[list[str], dict[str, str | int | None]]:
     if media_item.kind == "episode":
         if media_item.series_title is None:
@@ -390,6 +1099,8 @@ def _build_tag_command(
                 tag_season = 1
                 tag_episode = media_item.episode_number
 
+        tag_year = _itunes_release_date_from_iso_date(media_item.air_date)
+
         command = build_tv_tag_command(
             atomicparsley_bin,
             media_path,
@@ -397,6 +1108,10 @@ def _build_tag_command(
             show_title=tag_show_title,
             season_number=tag_season,
             episode_number=tag_episode,
+            year=tag_year,
+            tv_episode_id=media_item.episode_id,
+            genre=media_item.genre,
+            artwork_path=artwork_path,
         )
         metadata: dict[str, str | int | None] = {
             "kind": "TV Show",
@@ -404,30 +1119,66 @@ def _build_tag_command(
             "show": tag_show_title,
             "season": tag_season,
             "episode": tag_episode,
-            "episode_id": f"S{tag_season:02d}E{tag_episode:02d}",
+            "episode_id": media_item.episode_id or f"S{tag_season:02d}E{tag_episode:02d}",
+            "air_date": media_item.air_date,
+            "year": tag_year,
             "artist": tag_show_title,
             "album": tag_show_title,
+            "genre": media_item.genre,
+            "artwork": str(artwork_path) if artwork_path is not None else None,
         }
         return command, metadata
 
     if media_item.kind == "movie":
         movie_title = media_item.movie_title or media_item.title
+        tag_year = media_item.year if media_item.year is not None else _year_from_iso_date(media_item.release_date)
         command = build_movie_tag_command(
             atomicparsley_bin,
             media_path,
             movie_title=movie_title,
-            year=media_item.year,
+            year=tag_year,
+            genre=media_item.genre,
+            artwork_path=artwork_path,
         )
         metadata = {
             "kind": "Movie",
             "title": movie_title,
-            "year": media_item.year,
+            "year": tag_year,
+            "release_date": media_item.release_date,
             "artist": movie_title,
             "album": movie_title,
+            "genre": media_item.genre,
+            "artwork": str(artwork_path) if artwork_path is not None else None,
         }
         return command, metadata
 
     raise WalkmarrError(f"Unsupported media kind: {media_item.kind}")
+
+
+def _year_from_iso_date(value: str | None) -> int | None:
+    if value is None:
+        return None
+    if len(value) < 4:
+        return None
+    year_text = value[:4]
+    if not year_text.isdigit():
+        return None
+    return int(year_text)
+
+
+def _itunes_release_date_from_iso_date(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) != 10:
+        return None
+    if value[4] != "-" or value[7] != "-":
+        return None
+    year_text = value[:4]
+    month_text = value[5:7]
+    day_text = value[8:10]
+    if not year_text.isdigit() or not month_text.isdigit() or not day_text.isdigit():
+        return None
+    return f"{value}T00:00:00Z"
 
 
 def _print_conversion_plan(
@@ -436,12 +1187,13 @@ def _print_conversion_plan(
     media_item: MediaItem,
     provider_name: str,
     metadata: dict[str, str | int | None],
-    ffmpeg_plan: ConversionPlan,
+    conversion_plan: ConversionPlan,
     tag_command: list[str],
     staging_applied: bool,
     staging_path: Path | None,
+    artwork_priority: str | None = None,
 ) -> None:
-    plan = ffmpeg_plan
+    plan = conversion_plan
     source_label = media_item.remote_source_path or str(media_item.source_path)
 
     console.print("Converting:")
@@ -457,12 +1209,16 @@ def _print_conversion_plan(
         console.print(f"  Season: {metadata['season']}")
         console.print(f"  Episode: {metadata['episode']}")
         console.print(f"  Title: {media_item.title}")
+        if metadata.get("air_date"):
+            console.print(f"  Air date: {metadata['air_date']}")
     else:
         console.print(f"  Movie: {metadata['title']}")
         console.print(f"  Year: {metadata['year']}")
+        if metadata.get("release_date"):
+            console.print(f"  Release date: {metadata['release_date']}")
 
     console.print(f"  Profile: {media_item.profile_name}")
-    console.print(f"  CRF: {plan.command[plan.command.index('-crf') + 1]}")
+    console.print(f"  Video quality: CRF {plan.crf}")
     source_vbit = plan.source_video_bitrate_kbps
     vbit_display = f"{source_vbit} kbps" if source_vbit is not None else "unknown"
     console.print(f"  Source vbit: {vbit_display}")
@@ -471,8 +1227,12 @@ def _print_conversion_plan(
     console.print(f"  Audio stream: {plan.selected_audio_index} ({selected_language})")
     console.print(f"  Audio: {plan.audio_channels}ch @ {plan.audio_bitrate_kbps}k")
     console.print(f"  Filter: {plan.filter_expr}")
+    if artwork_priority is not None:
+        console.print(f"  Artwork priority: {artwork_priority}")
     console.print(f"  Metadata: {metadata}")
-    console.print(f"  ffmpeg command: {shlex.join(plan.command)}")
+    console.print(f"  audio wav command: {shlex.join(plan.audio_wav_command)}")
+    console.print(f"  fdkaac command: {shlex.join(plan.fdkaac_command)}")
+    console.print(f"  video mux command: {shlex.join(plan.video_mux_command)}")
     console.print(f"  AtomicParsley command: {shlex.join(tag_command)}")
 
 
@@ -493,44 +1253,124 @@ def planned_staging_path(source_path: Path, staging_directory: Path) -> Path:
     return staging_directory / f"{source_path.stem}.{digest}{suffix}"
 
 
-def stage_source_file(source_path: Path, staging_directory: Path, console: Console) -> Path:
+def stage_source_file(
+    source_path: Path,
+    staging_directory: Path,
+    console: Console,
+    *,
+    show_progress: bool = True,
+) -> Path:
     """Copy source file to local staging directory and return staged path."""
     staged_path = planned_staging_path(source_path, staging_directory)
     staged_path.parent.mkdir(parents=True, exist_ok=True)
 
     source_size = source_path.stat().st_size
-    console.print(f"Staging source: {source_path}")
-    console.print(f"  -> {staged_path}")
+    if show_progress:
+        console.print(f"Staging source: {source_path}")
+        console.print(f"  -> {staged_path}")
+    else:
+        console.print(f"Staging source: {source_path}")
+        console.print(f"  -> {staged_path}")
 
-    chunk_size = 8 * 1024 * 1024
-    try:
-        with (
-            source_path.open("rb") as src,
-            staged_path.open("wb") as dst,
-            Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TransferSpeedColumn(),
-                TimeRemainingColumn(),
+    max_attempts = 3
+    staged_ok = False
+    last_error: OSError | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            _copy_file_chunked(
+                source_path=source_path,
+                staged_path=staged_path,
+                source_size=source_size,
                 console=console,
-                transient=True,
-            ) as progress,
-        ):
-            task = progress.add_task("Staging", total=source_size if source_size > 0 else None)
+                show_progress=show_progress,
+            )
+            shutil.copystat(source_path, staged_path)
+            staged_ok = True
+            break
+        except OSError as exc:
+            last_error = exc
+            if staged_path.exists():
+                staged_path.unlink()
+            is_retryable = exc.errno == errno.EIO
+            if is_retryable and attempt < max_attempts:
+                console.print(
+                    f"Staging hit I/O error (attempt {attempt}/{max_attempts}); retrying..."
+                )
+                time.sleep(float(attempt))
+                continue
+
+    if not staged_ok:
+        if last_error is None:
+            raise OSError(errno.EIO, f"Failed staging source file: {source_path}")
+
+        if last_error.errno == errno.EIO:
+            console.print("Staging fallback: trying system cp...")
+            try:
+                _copy_file_with_cp(source_path, staged_path)
+                shutil.copystat(source_path, staged_path)
+                staged_ok = True
+            except OSError as exc:
+                if staged_path.exists():
+                    staged_path.unlink()
+                raise exc from last_error
+        else:
+            raise last_error
+
+    if show_progress:
+        console.print("Staging complete.")
+    else:
+        console.print("Staging complete.")
+    return staged_path
+
+
+def _copy_file_chunked(
+    *,
+    source_path: Path,
+    staged_path: Path,
+    source_size: int,
+    console: Console,
+    show_progress: bool,
+) -> None:
+    chunk_size = 8 * 1024 * 1024
+    if not show_progress:
+        with source_path.open("rb") as src, staged_path.open("wb") as dst:
             while True:
                 chunk = src.read(chunk_size)
                 if not chunk:
                     break
                 dst.write(chunk)
-                progress.update(task, advance=len(chunk))
-        shutil.copystat(source_path, staged_path)
-    except OSError:
-        if staged_path.exists():
-            staged_path.unlink()
-        raise
+        return
 
-    console.print("Staging complete.")
-    return staged_path
+    with (
+        source_path.open("rb") as src,
+        staged_path.open("wb") as dst,
+        Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=True,
+        ) as progress,
+    ):
+        task = progress.add_task("Staging", total=source_size if source_size > 0 else None)
+        while True:
+            chunk = src.read(chunk_size)
+            if not chunk:
+                break
+            dst.write(chunk)
+            progress.update(task, advance=len(chunk))
+
+
+def _copy_file_with_cp(source_path: Path, staged_path: Path) -> None:
+    cp_binary = shutil.which("cp")
+    if cp_binary is None:
+        raise OSError(errno.ENOENT, "'cp' binary not found for staging fallback")
+
+    try:
+        subprocess.run([cp_binary, str(source_path), str(staged_path)], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise OSError(errno.EIO, f"cp fallback failed with exit code {exc.returncode}") from exc
 
 
 def is_network_mount_path(path: Path) -> bool:

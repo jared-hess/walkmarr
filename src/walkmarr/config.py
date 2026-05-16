@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -10,7 +11,19 @@ from dotenv import load_dotenv
 import yaml
 
 from walkmarr.exceptions import ConfigError
-from walkmarr.models import AppConfig, PathMapping, ProviderConfig, VideoProfile
+from walkmarr.models import (
+    AppConfig,
+    ArtworkConfig,
+    ArtworkProviderConfig,
+    ArtworkFallbackProviderConfig,
+    GenreProfileRule,
+    PathMapping,
+    ProviderConfig,
+    VideoProfile,
+)
+
+
+_SCAN_MATCH_MODES = {"near", "wider", "taller", "exact"}
 
 
 def config_search_paths() -> list[Path]:
@@ -40,43 +53,86 @@ def default_bootstrap_payload() -> dict[str, Any]:
         ],
         "output_roots": {"shows": "/mnt/walkmarr/shows", "movies": "/mnt/walkmarr/movies"},
         "staging": {"mode": "auto", "directory": "/tmp/walkmarr-staging"},
-        "default_profiles": {"sonarr": "animation", "radarr": "movie"},
+        "debug": {"keep_failed_temps": False},
+        "queue": {
+            "workers": 1,
+            "continue_on_error": True,
+            "start_paused": False,
+            "default_mode": "missing_only",
+            "remember_completed_until_exit": True,
+        },
+        "artwork": {
+            "enabled": True,
+            "providers": {
+                "itunes_tv_season": {
+                    "enabled": True,
+                    "apply_to": ["tv"],
+                    "country": "US",
+                    "image_size": 320,
+                    "timeout_seconds": 10,
+                    "minimum_confidence": "parsed",
+                    "sonarr_fallback": {"enabled": True},
+                    "radarr_fallback": {"enabled": True},
+                }
+            },
+        },
+        "default_profiles": {"sonarr": "live_action", "radarr": "movie"},
+        "genre_profile_map": {
+            "sonarr": [
+                {"genres": ["animation", "anime"], "profile": "animation"},
+            ],
+            "radarr": [
+                {"genres": ["animation", "anime"], "profile": "animation"},
+            ],
+        },
         "profiles": {
             "animation": {
                 "crf": 30,
                 "maxrate_floor_kbps": 250,
-                "maxrate_cap_kbps": 1200,
+                "maxrate_cap_kbps": 768,
+                "bufsize_kbps": 1500,
                 "bitrate_multiplier": 1.5,
-                "audio_bitrate_mono_kbps": 64,
-                "audio_bitrate_stereo_kbps": 96,
-                "max_width": 640,
+                "audio_bitrate_mono_kbps": 160,
+                "audio_bitrate_stereo_kbps": 160,
+                "max_width": 320,
                 "h264_profile": "baseline",
-                "h264_level": "3.0",
+                "h264_level": "1.3",
                 "preferred_audio_languages": ["eng"],
+                "scan_target_aspect_ratio": "4:3",
+                "scan_tolerance": 0.03,
+                "scan_match_mode": "near",
             },
             "live_action": {
-                "crf": 28,
-                "maxrate_floor_kbps": 350,
-                "maxrate_cap_kbps": 1500,
+                "crf": 30,
+                "maxrate_floor_kbps": 250,
+                "maxrate_cap_kbps": 768,
+                "bufsize_kbps": 1500,
                 "bitrate_multiplier": 1.5,
-                "audio_bitrate_mono_kbps": 64,
-                "audio_bitrate_stereo_kbps": 96,
-                "max_width": 640,
+                "audio_bitrate_mono_kbps": 160,
+                "audio_bitrate_stereo_kbps": 160,
+                "max_width": 320,
                 "h264_profile": "baseline",
-                "h264_level": "3.0",
+                "h264_level": "1.3",
                 "preferred_audio_languages": ["eng"],
+                "scan_target_aspect_ratio": "4:3",
+                "scan_tolerance": 0.03,
+                "scan_match_mode": "near",
             },
             "movie": {
-                "crf": 27,
-                "maxrate_floor_kbps": 400,
-                "maxrate_cap_kbps": 1500,
+                "crf": 30,
+                "maxrate_floor_kbps": 250,
+                "maxrate_cap_kbps": 768,
+                "bufsize_kbps": 1500,
                 "bitrate_multiplier": 1.5,
-                "audio_bitrate_mono_kbps": 64,
-                "audio_bitrate_stereo_kbps": 96,
-                "max_width": 640,
+                "audio_bitrate_mono_kbps": 160,
+                "audio_bitrate_stereo_kbps": 160,
+                "max_width": 320,
                 "h264_profile": "baseline",
-                "h264_level": "3.0",
+                "h264_level": "1.3",
                 "preferred_audio_languages": ["eng"],
+                "scan_target_aspect_ratio": "4:3",
+                "scan_tolerance": 0.03,
+                "scan_match_mode": "near",
             },
         },
         "overrides": {"sonarr": {}, "radarr": {}},
@@ -153,10 +209,20 @@ def _build_video_profile(name: str, data: dict[str, Any]) -> VideoProfile:
         else:
             preferred_languages = ("eng",)
 
+        scan_match_mode = str(data.get("scan_match_mode", "near")).casefold()
+        if scan_match_mode not in _SCAN_MATCH_MODES:
+            raise ConfigError(
+                f"Profile '{name}' has invalid scan_match_mode: {scan_match_mode}"
+            )
+        scan_tolerance = float(data.get("scan_tolerance", 0.03))
+        if not math.isfinite(scan_tolerance) or scan_tolerance < 0:
+            raise ConfigError(f"Profile '{name}' has invalid scan_tolerance: {scan_tolerance}")
+
         return VideoProfile(
             crf=int(data["crf"]),
             maxrate_floor_kbps=int(data["maxrate_floor_kbps"]),
             maxrate_cap_kbps=int(data["maxrate_cap_kbps"]),
+            bufsize_kbps=int(data.get("bufsize_kbps", 1500)),
             bitrate_multiplier=float(data["bitrate_multiplier"]),
             audio_bitrate_mono_kbps=int(data["audio_bitrate_mono_kbps"]),
             audio_bitrate_stereo_kbps=int(data["audio_bitrate_stereo_kbps"]),
@@ -164,11 +230,254 @@ def _build_video_profile(name: str, data: dict[str, Any]) -> VideoProfile:
             h264_profile=str(data["h264_profile"]),
             h264_level=str(data["h264_level"]),
             preferred_audio_languages=preferred_languages,
+            scan_target_aspect_ratio=str(data.get("scan_target_aspect_ratio", "4:3")),
+            scan_tolerance=scan_tolerance,
+            scan_match_mode=cast(Literal["near", "wider", "taller", "exact"], scan_match_mode),
         )
     except KeyError as exc:
         raise ConfigError(f"Profile '{name}' is missing required key: {exc}") from exc
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"Profile '{name}' has invalid value type: {exc}") from exc
+
+
+def _parse_genre_profile_map(payload: dict[str, Any]) -> dict[str, tuple[GenreProfileRule, ...]]:
+    raw = payload.get("genre_profile_map", {})
+    if not isinstance(raw, dict):
+        raise ConfigError("genre_profile_map must be a mapping")
+
+    parsed: dict[str, tuple[GenreProfileRule, ...]] = {"sonarr": (), "radarr": ()}
+    for provider_name in ("sonarr", "radarr"):
+        provider_rules_raw = raw.get(provider_name, [])
+        if provider_rules_raw is None:
+            provider_rules_raw = []
+        if not isinstance(provider_rules_raw, list):
+            raise ConfigError(f"genre_profile_map.{provider_name} must be a list")
+
+        rules: list[GenreProfileRule] = []
+        for index, rule_raw in enumerate(provider_rules_raw):
+            if not isinstance(rule_raw, dict):
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}] must be a mapping"
+                )
+
+            profile_raw = rule_raw.get("profile")
+            if not isinstance(profile_raw, str) or not profile_raw.strip():
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}].profile must be a non-empty string"
+                )
+
+            genres_raw = rule_raw.get("genres")
+            if genres_raw is None:
+                genre_raw = rule_raw.get("genre")
+                if isinstance(genre_raw, str):
+                    genres_raw = [genre_raw]
+
+            if not isinstance(genres_raw, list):
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}] must include 'genres' list or 'genre' string"
+                )
+
+            normalized_genres: list[str] = []
+            for genre in genres_raw:
+                if not isinstance(genre, str) or not genre.strip():
+                    continue
+                normalized = genre.casefold().strip()
+                if normalized and normalized not in normalized_genres:
+                    normalized_genres.append(normalized)
+
+            if not normalized_genres:
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}] must include at least one non-empty genre"
+                )
+
+            rules.append(
+                GenreProfileRule(
+                    genres=tuple(normalized_genres),
+                    profile=profile_raw.strip(),
+                )
+            )
+
+        parsed[provider_name] = tuple(rules)
+
+    return parsed
+
+
+_KNOWN_APPLY_TO = {"tv", "movie"}
+_KNOWN_CONFIDENCE = {"exact", "parsed"}
+
+
+def _parse_artwork_fallback_provider(
+    provider_name: str,
+    fallback_name: str,
+    raw: dict[str, Any],
+    *,
+    default: bool,
+) -> bool:
+    fallback_raw = raw.get(fallback_name, {"enabled": default})
+    if fallback_raw is None:
+        fallback_raw = {"enabled": default}
+    if not isinstance(fallback_raw, dict):
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.{fallback_name} must be a mapping"
+        )
+
+    enabled = fallback_raw.get("enabled", default)
+    if not isinstance(enabled, bool):
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.{fallback_name}.enabled must be a boolean"
+        )
+    return enabled
+
+
+def _parse_artwork_provider_config(
+    provider_name: str,
+    raw: dict[str, Any] | None,
+) -> ArtworkProviderConfig:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"artwork.providers.{provider_name} must be a mapping")
+
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"artwork.providers.{provider_name}.enabled must be a boolean")
+
+    apply_to_raw = raw.get("apply_to", ["tv"])
+    if not isinstance(apply_to_raw, list) or not apply_to_raw:
+        raise ConfigError(f"artwork.providers.{provider_name}.apply_to must be a non-empty list")
+    apply_to: list[Literal["tv", "movie"]] = []
+    for index, value in enumerate(apply_to_raw):
+        if not isinstance(value, str):
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.apply_to[{index}] must be a non-empty string"
+            )
+        target = value.casefold().strip()
+        if not target:
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.apply_to[{index}] must be a non-empty string"
+            )
+        if target not in _KNOWN_APPLY_TO:
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.apply_to[{index}] must be 'tv' or 'movie'"
+            )
+        if provider_name == "itunes_tv_season" and target != "tv":
+            raise ConfigError("itunes_tv_season.apply_to can only be 'tv'")
+        if target not in apply_to:
+            apply_to.append(cast(Literal["tv", "movie"], target))
+
+    country_raw = raw.get("country", "US")
+    if not isinstance(country_raw, str) or not country_raw.strip():
+        raise ConfigError(f"artwork.providers.{provider_name}.country must be a non-empty string")
+    country = country_raw.strip().upper()
+    if len(country) != 2 or not country.isalpha():
+        raise ConfigError(f"artwork.providers.{provider_name}.country must be a two-letter country code")
+
+    image_size_raw = raw.get("image_size", 320)
+    if not isinstance(image_size_raw, int) or isinstance(image_size_raw, bool) or image_size_raw <= 0:
+        raise ConfigError(f"artwork.providers.{provider_name}.image_size must be a positive integer")
+
+    timeout_seconds_raw = raw.get("timeout_seconds", 10)
+    if (
+        not isinstance(timeout_seconds_raw, int)
+        or isinstance(timeout_seconds_raw, bool)
+        or timeout_seconds_raw <= 0
+    ):
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.timeout_seconds must be a positive integer"
+        )
+
+    minimum_confidence_raw = raw.get("minimum_confidence", "parsed")
+    if not isinstance(minimum_confidence_raw, str) or not minimum_confidence_raw.strip():
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.minimum_confidence must be a non-empty string"
+        )
+    minimum_confidence = minimum_confidence_raw.strip().casefold()
+    if minimum_confidence not in _KNOWN_CONFIDENCE:
+        raise ConfigError(
+            f"artwork.providers.{provider_name}.minimum_confidence must be one of: {', '.join(sorted(_KNOWN_CONFIDENCE))}"
+        )
+
+    fallback_providers_raw = raw.get("fallback_providers")
+    if fallback_providers_raw is None:
+        sonarr_fallback_enabled = _parse_artwork_fallback_provider(
+            provider_name,
+            "sonarr_fallback",
+            raw,
+            default=True,
+        )
+        radarr_fallback_enabled = _parse_artwork_fallback_provider(
+            provider_name,
+            "radarr_fallback",
+            raw,
+            default=True,
+        )
+    else:
+        if not isinstance(fallback_providers_raw, list) or not fallback_providers_raw:
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.fallback_providers must be a non-empty list"
+            )
+        fallback_providers: list[Literal["sonarr", "radarr"]] = []
+        for index, value in enumerate(fallback_providers_raw):
+            if not isinstance(value, str):
+                raise ConfigError(
+                    f"artwork.providers.{provider_name}.fallback_providers[{index}] must be 'sonarr' or 'radarr'"
+                )
+            provider = value.casefold().strip()
+            if provider not in {"sonarr", "radarr"}:
+                raise ConfigError(
+                    f"artwork.providers.{provider_name}.fallback_providers[{index}] must be 'sonarr' or 'radarr'"
+                )
+            if provider not in fallback_providers:
+                fallback_providers.append(cast(Literal["sonarr", "radarr"], provider))
+        if not fallback_providers:
+            raise ConfigError(
+                f"artwork.providers.{provider_name}.fallback_providers must include at least one provider"
+            )
+        sonarr_fallback_enabled = "sonarr" in fallback_providers
+        radarr_fallback_enabled = "radarr" in fallback_providers
+
+    if not (sonarr_fallback_enabled or radarr_fallback_enabled):
+        raise ConfigError(
+            f"artwork.providers.{provider_name} must enable at least one fallback provider"
+        )
+
+    return ArtworkProviderConfig(
+        enabled=enabled,
+        apply_to=tuple(apply_to),
+        country=country,
+        image_size=image_size_raw,
+        timeout_seconds=timeout_seconds_raw,
+        minimum_confidence=cast(
+            Literal["exact", "parsed"],
+            minimum_confidence,
+        ),
+        sonarr_fallback=ArtworkFallbackProviderConfig(enabled=sonarr_fallback_enabled),
+        radarr_fallback=ArtworkFallbackProviderConfig(enabled=radarr_fallback_enabled),
+    )
+
+
+def _parse_artwork_config(payload: dict[str, Any]) -> ArtworkConfig:
+    raw = payload.get("artwork", {})
+    if not isinstance(raw, dict):
+        raise ConfigError("artwork must be a mapping")
+
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError("artwork.enabled must be a boolean")
+
+    providers_raw = raw.get("providers", {})
+    if providers_raw is None:
+        providers_raw = {}
+    if not isinstance(providers_raw, dict):
+        raise ConfigError("artwork.providers must be a mapping")
+
+    providers = {
+        "itunes_tv_season": _parse_artwork_provider_config(
+            "itunes_tv_season",
+            providers_raw.get("itunes_tv_season", {}),
+        )
+    }
+    return ArtworkConfig(enabled=enabled, providers=providers)
 
 
 def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
@@ -275,16 +584,53 @@ def load_config(explicit_path: Path | None = None) -> tuple[Path, AppConfig]:
     if not isinstance(staging_directory_raw, str) or not staging_directory_raw.strip():
         raise ConfigError("staging.directory must be a non-empty string")
 
+    queue_raw = payload.get("queue", {})
+    if not isinstance(queue_raw, dict):
+        raise ConfigError("queue must be a mapping")
+    queue_workers = int(queue_raw.get("workers", 1))
+    if queue_workers != 1:
+        raise ConfigError("queue.workers must be 1 in v2")
+    queue_continue_on_error = bool(queue_raw.get("continue_on_error", True))
+    queue_start_paused = bool(queue_raw.get("start_paused", False))
+    queue_default_mode_raw = queue_raw.get("default_mode", "missing_only")
+    if not isinstance(queue_default_mode_raw, str):
+        raise ConfigError("queue.default_mode must be a string")
+    queue_default_mode = queue_default_mode_raw.casefold()
+    if queue_default_mode not in {"missing_only", "overwrite"}:
+        raise ConfigError("queue.default_mode must be one of: missing_only, overwrite")
+    queue_remember_completed_until_exit = bool(
+        queue_raw.get("remember_completed_until_exit", True)
+    )
+
+    debug_raw = payload.get("debug", {})
+    if not isinstance(debug_raw, dict):
+        raise ConfigError("debug must be a mapping")
+    keep_failed_temps = bool(debug_raw.get("keep_failed_temps", False))
+
+    genre_profile_map = _parse_genre_profile_map(payload)
+    artwork = _parse_artwork_config(payload)
+
     app_config = AppConfig(
         providers=providers,
         path_mappings=path_mappings,
         output_roots=output_roots,
-        default_profiles={"sonarr": str(default_profiles["sonarr"]), "radarr": str(default_profiles["radarr"] )},
+        default_profiles={
+            "sonarr": str(default_profiles["sonarr"]),
+            "radarr": str(default_profiles["radarr"]),
+        },
         profiles=profiles,
         overrides=overrides,
+        genre_profile_map=genre_profile_map,
         staging_mode=validated_staging_mode,
         staging_directory=Path(staging_directory_raw),
         allow_unmapped_existing_local=bool(payload.get("allow_unmapped_existing_local", False)),
+        queue_workers=queue_workers,
+        queue_continue_on_error=queue_continue_on_error,
+        queue_start_paused=queue_start_paused,
+        queue_default_mode=cast(Literal["missing_only", "overwrite"], queue_default_mode),
+        queue_remember_completed_until_exit=queue_remember_completed_until_exit,
+        keep_failed_temps=keep_failed_temps,
+        artwork=artwork,
     )
 
     _validate_profiles_exist(app_config)
@@ -319,6 +665,13 @@ def _validate_profiles_exist(config: AppConfig) -> None:
             if override_profile_name not in config.profiles:
                 raise ConfigError(
                     f"Override profile '{override_profile_name}' for {provider_name}:{title} is not defined"
+                )
+
+    for provider_name in ("sonarr", "radarr"):
+        for index, rule in enumerate(config.genre_profile_map.get(provider_name, ())):
+            if rule.profile not in config.profiles:
+                raise ConfigError(
+                    f"genre_profile_map.{provider_name}[{index}] profile '{rule.profile}' is not defined"
                 )
 
 
@@ -358,6 +711,56 @@ def profile_name_for_title(config: AppConfig, provider_name: str, title: str) ->
     return config.default_profiles[provider_name]
 
 
+def profile_name_for_sonarr_series(config: AppConfig, series: dict[str, Any]) -> str:
+    """Select Sonarr profile using override and series genres."""
+    title = str(series.get("title", ""))
+    if title:
+        override = config.overrides.get("sonarr", {}).get(title, {})
+        override_profile = override.get("profile")
+        if isinstance(override_profile, str) and override_profile:
+            return override_profile
+
+    genres = _normalized_genre_set(series.get("genres"))
+
+    mapped_profile = _mapped_profile_for_genres(config, "sonarr", genres)
+    if mapped_profile is not None:
+        return mapped_profile
+
+    if "animation" in genres or "anime" in genres:
+        if "animation" in config.profiles:
+            return "animation"
+        return config.default_profiles["sonarr"]
+
+    if "live_action" in config.profiles:
+        return "live_action"
+    return config.default_profiles["sonarr"]
+
+
+def profile_name_for_radarr_movie(config: AppConfig, movie: dict[str, Any]) -> str:
+    """Select Radarr profile using override and movie genres."""
+    title = str(movie.get("title", ""))
+    if title:
+        override = config.overrides.get("radarr", {}).get(title, {})
+        override_profile = override.get("profile")
+        if isinstance(override_profile, str) and override_profile:
+            return override_profile
+
+    genres = _normalized_genre_set(movie.get("genres"))
+
+    mapped_profile = _mapped_profile_for_genres(config, "radarr", genres)
+    if mapped_profile is not None:
+        return mapped_profile
+
+    if "animation" in genres or "anime" in genres:
+        if "animation" in config.profiles:
+            return "animation"
+        return config.default_profiles["radarr"]
+
+    if "movie" in config.profiles:
+        return "movie"
+    return config.default_profiles["radarr"]
+
+
 def sonarr_specials_show_name(config: AppConfig, series_title: str) -> str | None:
     """Return configured specials show name override, if any."""
     override = config.overrides.get("sonarr", {}).get(series_title, {})
@@ -365,3 +768,28 @@ def sonarr_specials_show_name(config: AppConfig, series_title: str) -> str | Non
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _normalized_genre_set(genres_raw: object) -> set[str]:
+    if not isinstance(genres_raw, list):
+        return set()
+    return {
+        str(genre).casefold().strip()
+        for genre in genres_raw
+        if isinstance(genre, str) and genre.strip()
+    }
+
+
+def _mapped_profile_for_genres(
+    config: AppConfig,
+    provider_name: Literal["sonarr", "radarr"],
+    genres: set[str],
+) -> str | None:
+    rules = config.genre_profile_map.get(provider_name, ())
+    if not rules:
+        return None
+
+    for rule in rules:
+        if any(genre in genres for genre in rule.genres):
+            return rule.profile
+    return config.default_profiles[provider_name]

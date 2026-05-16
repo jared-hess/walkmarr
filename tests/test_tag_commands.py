@@ -20,6 +20,20 @@ def test_tv_tag_command_contains_required_fields() -> None:
     assert "--TVEpisode" in cmd and cmd[cmd.index("--TVEpisode") + 1] == "S01E01"
 
 
+def test_tv_tag_command_accepts_episode_id_override() -> None:
+    cmd = build_tv_tag_command(
+        "AtomicParsley",
+        Path("/tmp/episode.mp4"),
+        episode_title="Pilot",
+        show_title="Show",
+        season_number=1,
+        episode_number=1,
+        tv_episode_id="S01E01-E02",
+    )
+    assert "--TVEpisode" in cmd
+    assert cmd[cmd.index("--TVEpisode") + 1] == "S01E01-E02"
+
+
 def test_movie_tag_command_contains_required_fields() -> None:
     cmd = build_movie_tag_command(
         "AtomicParsley",
@@ -30,3 +44,65 @@ def test_movie_tag_command_contains_required_fields() -> None:
     assert "--stik" in cmd and cmd[cmd.index("--stik") + 1] == "Movie"
     assert "--title" in cmd and cmd[cmd.index("--title") + 1] == "American Psycho"
     assert "--year" in cmd and cmd[cmd.index("--year") + 1] == "2000"
+
+
+def test_tag_commands_include_genre_when_provided() -> None:
+    tv_cmd = build_tv_tag_command(
+        "AtomicParsley",
+        Path("/tmp/episode.mp4"),
+        episode_title="Pilot",
+        show_title="Show",
+        season_number=1,
+        episode_number=1,
+        genre="Comedy",
+    )
+    movie_cmd = build_movie_tag_command(
+        "AtomicParsley",
+        Path("/tmp/movie.mp4"),
+        movie_title="Movie",
+        year=None,
+        genre="Action",
+    )
+    assert "--genre" in tv_cmd and tv_cmd[tv_cmd.index("--genre") + 1] == "Comedy"
+    assert "--genre" in movie_cmd and movie_cmd[movie_cmd.index("--genre") + 1] == "Action"
+
+
+def test_tag_commands_include_artwork_when_provided() -> None:
+    tv_artwork = Path("/tmp/tv-poster.jpg")
+    movie_artwork = Path("/tmp/movie-poster.jpg")
+    tv_cmd = build_tv_tag_command(
+        "AtomicParsley",
+        Path("/tmp/episode.mp4"),
+        episode_title="Pilot",
+        show_title="Show",
+        season_number=1,
+        episode_number=1,
+        artwork_path=tv_artwork,
+    )
+    movie_cmd = build_movie_tag_command(
+        "AtomicParsley",
+        Path("/tmp/movie.mp4"),
+        movie_title="Movie",
+        year=None,
+        artwork_path=movie_artwork,
+    )
+    assert tv_cmd.count("--artwork") == 1
+    tv_artwork_index = tv_cmd.index("--artwork")
+    assert tv_cmd[tv_artwork_index + 1] == str(tv_artwork)
+
+    assert movie_cmd.count("--artwork") == 1
+    movie_artwork_index = movie_cmd.index("--artwork")
+    assert movie_cmd[movie_artwork_index + 1] == str(movie_artwork)
+
+
+def test_tv_tag_command_includes_year_when_provided() -> None:
+    cmd = build_tv_tag_command(
+        "AtomicParsley",
+        Path("/tmp/episode.mp4"),
+        episode_title="Pilot",
+        show_title="Show",
+        season_number=1,
+        episode_number=1,
+        year=1999,
+    )
+    assert "--year" in cmd and cmd[cmd.index("--year") + 1] == "1999"

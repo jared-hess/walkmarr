@@ -25,10 +25,14 @@ def build_tv_tag_command(
     show_title: str,
     season_number: int,
     episode_number: int,
+    year: int | str | None = None,
+    tv_episode_id: str | None = None,
+    genre: str | None = None,
+    artwork_path: Path | None = None,
 ) -> list[str]:
     """Build AtomicParsley command for TV metadata tags."""
-    episode_id = f"S{season_number:02d}E{episode_number:02d}"
-    return [
+    episode_id = tv_episode_id or f"S{season_number:02d}E{episode_number:02d}"
+    command = [
         atomicparsley_bin,
         str(media_path),
         "--stik",
@@ -47,8 +51,15 @@ def build_tv_tag_command(
         show_title,
         "--album",
         show_title,
-        "--overWrite",
     ]
+    if year is not None:
+        command.extend(["--year", str(year)])
+    if genre is not None and genre.strip():
+        command.extend(["--genre", genre.strip()])
+    if artwork_path is not None:
+        command.extend(["--artwork", str(artwork_path)])
+    command.append("--overWrite")
+    return command
 
 
 def build_movie_tag_command(
@@ -57,6 +68,8 @@ def build_movie_tag_command(
     *,
     movie_title: str,
     year: int | None,
+    genre: str | None = None,
+    artwork_path: Path | None = None,
 ) -> list[str]:
     """Build AtomicParsley command for movie metadata tags."""
     command: list[str] = [
@@ -69,6 +82,10 @@ def build_movie_tag_command(
     ]
     if year is not None:
         command.extend(["--year", str(year)])
+    if genre is not None and genre.strip():
+        command.extend(["--genre", genre.strip()])
+    if artwork_path is not None:
+        command.extend(["--artwork", str(artwork_path)])
     command.extend([
         "--artist",
         movie_title,

@@ -10,16 +10,65 @@ mirror libraries, starting with iPod Classic-compatible video exports.
 - Maps provider paths to local paths (WSL/Docker-friendly mappings).
 - Converts to MP4 (H.264 + AAC) with profile-driven settings.
 - Tags MP4/M4V outputs with AtomicParsley for iTunes/iPod metadata.
+- Embeds artwork using a configured provider chain.
 - Never modifies source media files.
 
-## What Walkmarr does not do (v1)
+## What Walkmarr does not do
 
-- No TUI, web app, or daemon.
+- No web app or daemon.
 - No automatic *arr hook scripts.
 - No Lidarr/music pipeline.
-- No artwork download/embed pipeline (beyond future optional extension).
 - No source/output cleanup automation.
 - No Plex/Jellyfin/Tdarr/FileFlows integration.
+
+## Artwork behavior
+
+Walkmarr uses `artwork.providers.itunes_tv_season` for TV artwork. It is enabled
+in defaults, applies to `tv` only, and has these defaults:
+
+```yaml
+artwork:
+  enabled: true
+  providers:
+    itunes_tv_season:
+      enabled: true
+      apply_to: [tv]
+      country: US
+      image_size: 320
+      timeout_seconds: 10
+      minimum_confidence: parsed
+      sonarr_fallback:
+        enabled: true
+      radarr_fallback:
+        enabled: true
+```
+
+For Sonarr episode conversions, the priority is:
+
+1. `itunes_tv_season` match for the series/season.
+2. Sonarr provider poster fallback.
+3. No artwork, conversion continues without a tag.
+
+Movies/Radarr conversions are excluded from `itunes_tv_season`.
+Radarr uses its own poster fallback only, and there is no iTunes TV or movie
+provider coverage for movie artwork.
+
+All downloaded iTunes and fallback artwork is normalized to padded `320x320` JPEG
+before tagging so it is iPod/iTunes compatible.
+
+Matching is conservative by default:
+
+- Exact normalized match on artist and normalized `Series Title Season N` has highest
+  priority.
+- Parsed season fallback only accepts matches with the same season number and the
+  same artist.
+- Querying does not trust response ordering.
+- Special/unrelated collections (such as specials/holidays/compilations/volumes)
+  are rejected.
+- Ambiguous matches fall back to the next source.
+
+Lookup and download failures are non-fatal. If `itunes_tv_season` cannot produce
+artwork, Walkmarr logs why and continues with fallback poster or no artwork.
 
 ## Requirements
 
@@ -28,13 +77,14 @@ mirror libraries, starting with iPod Classic-compatible video exports.
 - System binaries:
   - `ffmpeg`
   - `ffprobe`
+  - `fdkaac`
   - `AtomicParsley` (or `atomicparsley`)
 
 Install required system binaries:
 
 ```bash
 sudo apt update
-sudo apt install ffmpeg atomicparsley
+sudo apt install ffmpeg fdkaac atomicparsley
 ```
 
 ## Install with uv
@@ -62,6 +112,17 @@ export the variables in your shell.
 Staging defaults to `auto`: Walkmarr detects network-like source mounts and
 copies source media to local temp storage before probing/conversion. You can
 set `staging.mode` to `always` or `never` in config.
+
+For one-off runs, you can override this with `--staging-mode auto|always|never`
+on `sonarr convert` and `radarr convert`.
+
+Queue defaults:
+
+- `queue.workers: 1` (v2 supports one active worker)
+- `queue.continue_on_error: true`
+- `queue.start_paused: false`
+- `queue.default_mode: missing_only`
+- `queue.remember_completed_until_exit: true`
 
 You can bootstrap with prompts:
 
@@ -105,6 +166,48 @@ uv run walkmarr radarr convert "American Psycho" --dry-run
 uv run walkmarr radarr convert "American Psycho"
 ```
 
+Read-only aspect-ratio scan examples:
+
+```bash
+uv run walkmarr scan aspect --provider all --ratio 4:3
+uv run walkmarr scan aspect --provider sonarr --profile animation
+uv run walkmarr scan aspect --provider radarr --match wider
+uv run walkmarr scan aspect --provider sonarr --source probe
+```
+
+`scan aspect` reads Sonarr/Radarr provider metadata by default and prints
+deterministic tab-separated rows for matching files. Use `--source probe` to map
+provider paths locally and ask `ffprobe` for display aspect-ratio metadata.
+Profile scan defaults are optional and default to:
+
+```yaml
+scan_target_aspect_ratio: "4:3"
+scan_tolerance: 0.03
+scan_match_mode: "near" # near, wider, taller, exact
+```
+
+Launch the TUI queue workflow:
+
+```bash
+uv run walkmarr tui
+```
+
+TUI key highlights:
+
+- `tab` cycle focus: media -> details -> queue -> log -> search
+- `j` / `k` move selection down/up in focused media or queue pane
+- `a` add selected media as missing-only queue job
+- `A` add selected media as overwrite queue job (confirmation modal)
+- `d` add selected media as dry-run queue job
+- `space` pause/resume queue
+- `x` cancel current queue item
+- `delete` remove selected pending queue item
+- `u` move selected queue item up
+- `J` / `K` move selected queue item down/up
+- `C` clear completed queue items
+- `X` clear pending queue items (confirmation modal)
+- `p` toggle provider Sonarr/Radarr
+
 ## Dry-run behavior
 
 Dry-run never writes files or creates directories. It prints:
@@ -117,6 +220,25 @@ Dry-run never writes files or creates directories. It prints:
 - metadata to be written
 - ffmpeg command
 - AtomicParsley command
+
+## Debugging failed conversions
+
+When a conversion fails, Walkmarr deletes any partial temp files (WAV, M4A,
+partial MP4) by default. To keep them for inspection, set this in your config:
+
+```yaml
+debug:
+  keep_failed_temps: true
+```
+
+Or pass `--keep-temp` on the CLI:
+
+```bash
+uv run walkmarr sonarr convert "Futurama" --keep-temp
+```
+
+Only files from failed conversions are kept. Successful outputs follow the
+normal write-then-rename flow and are not affected by this flag.
 
 ## Safety notes
 
